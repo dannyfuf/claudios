@@ -80,8 +80,8 @@ The script will:
 You can customize the install location with environment variables:
 
 ```sh
-BETTER_CLAUDE_INSTALL_DIR=~/tools/claudios \
-BETTER_CLAUDE_BIN_DIR=~/bin \
+CLAUDIOS_INSTALL_DIR=~/tools/claudios \
+CLAUDIOS_BIN_DIR=~/bin \
   curl -fsSL https://raw.githubusercontent.com/dannyfuf/claudios/main/install.sh | sh
 ```
 
@@ -403,6 +403,3 @@ Please [open an issue](https://github.com/dannyfuf/claudios/issues) with:
 
 MIT — see [LICENSE](LICENSE).
 
----
-
-<p align="center">Built with the <a href="https://github.com/anthropics/claude-agent-sdk">Anthropic Claude Agent SDK</a></p>

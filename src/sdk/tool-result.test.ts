@@ -3,7 +3,9 @@ import {
   buildUnifiedPatchFromStructuredPatch,
   extractToolResultIds,
   isFileModifyingToolName,
+  isTodoWriteToolName,
   normalizeFileToolResult,
+  normalizeTodoToolResult,
 } from "#sdk/tool-result"
 
 describe("tool-result helpers", () => {
@@ -158,5 +160,77 @@ describe("tool-result helpers", () => {
         structuredPatch: [],
       }),
     ).toBeNull()
+  })
+})
+
+describe("todo tool helpers", () => {
+  it("detects TodoWrite tool name case-insensitively", () => {
+    expect(isTodoWriteToolName("TodoWrite")).toBe(true)
+    expect(isTodoWriteToolName("todowrite")).toBe(true)
+    expect(isTodoWriteToolName("TODOWRITE")).toBe(true)
+    expect(isTodoWriteToolName("Write")).toBe(false)
+    expect(isTodoWriteToolName("Read")).toBe(false)
+  })
+
+  it("parses a valid TodoWrite result with newTodos", () => {
+    const result = normalizeTodoToolResult("TodoWrite", "tool-1", {
+      newTodos: [
+        { content: "Set up project", status: "completed" },
+        { content: "Implement feature", status: "in_progress", activeForm: "implementing feature" },
+        { content: "Write tests", status: "pending" },
+      ],
+      oldTodos: [],
+    })
+
+    expect(result).not.toBeNull()
+    expect(result?.items).toHaveLength(3)
+    expect(result?.items[0]).toEqual({ content: "Set up project", status: "completed" })
+    expect(result?.items[1]).toEqual({
+      content: "Implement feature",
+      status: "in_progress",
+      activeForm: "implementing feature",
+    })
+    expect(result?.items[2]).toEqual({ content: "Write tests", status: "pending" })
+    expect(result?.lastSourceToolUseId).toBe("tool-1")
+  })
+
+  it("omits activeForm when absent or empty", () => {
+    const result = normalizeTodoToolResult("TodoWrite", "tool-1", {
+      newTodos: [{ content: "Task one", status: "pending", activeForm: "" }],
+    })
+
+    expect(result?.items[0]).toEqual({ content: "Task one", status: "pending" })
+    expect(result?.items[0]).not.toHaveProperty("activeForm")
+  })
+
+  it("returns null for non-TodoWrite tool names", () => {
+    expect(normalizeTodoToolResult("Write", "tool-1", { newTodos: [] })).toBeNull()
+    expect(normalizeTodoToolResult("Read", "tool-1", { newTodos: [] })).toBeNull()
+  })
+
+  it("returns null when newTodos is missing", () => {
+    expect(normalizeTodoToolResult("TodoWrite", "tool-1", { oldTodos: [] })).toBeNull()
+  })
+
+  it("returns null when newTodos contains a malformed item", () => {
+    expect(
+      normalizeTodoToolResult("TodoWrite", "tool-1", {
+        newTodos: [{ content: 42, status: "pending" }],
+      }),
+    ).toBeNull()
+  })
+
+  it("returns null when newTodos contains an item with an invalid status", () => {
+    expect(
+      normalizeTodoToolResult("TodoWrite", "tool-1", {
+        newTodos: [{ content: "Task", status: "unknown" }],
+      }),
+    ).toBeNull()
+  })
+
+  it("fails soft when the tool result is not an object", () => {
+    expect(normalizeTodoToolResult("TodoWrite", "tool-1", "invalid")).toBeNull()
+    expect(normalizeTodoToolResult("TodoWrite", "tool-1", null)).toBeNull()
+    expect(normalizeTodoToolResult("TodoWrite", "tool-1", [])).toBeNull()
   })
 })

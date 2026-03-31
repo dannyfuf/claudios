@@ -1,4 +1,4 @@
-import type { ToolCallFileChange, ToolCallFileChangeType } from "#sdk/types"
+import type { ToolCallFileChange, ToolCallFileChangeType, TodoItem, TodoStatus, TodoTrackerState } from "#sdk/types"
 
 type StructuredPatchHunk = {
   readonly oldStart: number
@@ -7,6 +7,8 @@ type StructuredPatchHunk = {
   readonly newLines: number
   readonly lines: readonly string[]
 }
+
+const TODO_WRITE_TOOL_NAMES = new Set(["todowrite"])
 
 const FILE_MODIFYING_TOOL_NAMES = new Set([
   "write",
@@ -19,6 +21,68 @@ const FILE_MODIFYING_TOOL_NAMES = new Set([
 
 export function isFileModifyingToolName(toolName: string): boolean {
   return FILE_MODIFYING_TOOL_NAMES.has(toolName.trim().toLowerCase())
+}
+
+export function isTodoWriteToolName(toolName: string): boolean {
+  return TODO_WRITE_TOOL_NAMES.has(toolName.trim().toLowerCase())
+}
+
+export function normalizeTodoToolResult(
+  toolName: string,
+  toolUseId: string,
+  toolUseResult: unknown,
+): TodoTrackerState | null {
+  if (!isTodoWriteToolName(toolName) || !isRecord(toolUseResult)) {
+    return null
+  }
+
+  const newTodos = parseTodoItems(toolUseResult["newTodos"])
+  if (!newTodos) {
+    return null
+  }
+
+  return {
+    items: newTodos,
+    lastUpdatedAt: new Date(),
+    lastSourceToolUseId: toolUseId,
+  }
+}
+
+function parseTodoItems(value: unknown): readonly TodoItem[] | null {
+  if (!Array.isArray(value)) {
+    return null
+  }
+
+  const items: TodoItem[] = []
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      return null
+    }
+
+    const content = normalizeNonEmptyString(item["content"])
+    const status = normalizeTodoStatus(item["status"])
+
+    if (!content || !status) {
+      return null
+    }
+
+    const activeForm = normalizeNonEmptyString(item["activeForm"])
+    if (activeForm) {
+      items.push({ content, status, activeForm })
+    } else {
+      items.push({ content, status })
+    }
+  }
+
+  return items
+}
+
+function normalizeTodoStatus(value: unknown): TodoStatus | null {
+  if (value === "pending" || value === "in_progress" || value === "completed") {
+    return value
+  }
+  return null
 }
 
 export function extractToolResultIds(message: unknown): readonly string[] {

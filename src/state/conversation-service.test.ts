@@ -1059,6 +1059,193 @@ describe("ConversationService", () => {
     })
   })
 
+  it("parses a live TodoWrite result into the todoTracker state slice", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-todo-1",
+              name: "TodoWrite",
+              input: {
+                todos: [
+                  { content: "Step one", status: "completed" },
+                  { content: "Step two", status: "in_progress", activeForm: "doing step two" },
+                  { content: "Step three", status: "pending" },
+                ],
+              },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      createUserToolResultMessage({
+        uuid: "user-todo-result-1",
+        toolUseIds: ["tool-todo-1"],
+        toolUseResult: {
+          newTodos: [
+            { content: "Step one", status: "completed" },
+            { content: "Step two", status: "in_progress", activeForm: "doing step two" },
+            { content: "Step three", status: "pending" },
+          ],
+          oldTodos: [],
+        },
+      }),
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        session_id: "session-1",
+      },
+    ])
+
+    const { todoTracker } = service.getState()
+
+    expect(todoTracker).not.toBeNull()
+    expect(todoTracker?.items).toHaveLength(3)
+    expect(todoTracker?.items[0]).toEqual({ content: "Step one", status: "completed" })
+    expect(todoTracker?.items[1]).toMatchObject({ status: "in_progress", activeForm: "doing step two" })
+    expect(todoTracker?.lastSourceToolUseId).toBe("tool-todo-1")
+  })
+
+  it("updates todoTracker with the latest TodoWrite result when the tool fires multiple times", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-todo-1",
+              name: "TodoWrite",
+              input: { todos: [{ content: "Task A", status: "in_progress" }] },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      createUserToolResultMessage({
+        uuid: "user-todo-result-1",
+        toolUseIds: ["tool-todo-1"],
+        toolUseResult: { newTodos: [{ content: "Task A", status: "in_progress" }] },
+      }),
+      {
+        type: "assistant",
+        uuid: "assistant-2",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-todo-2",
+              name: "TodoWrite",
+              input: { todos: [{ content: "Task A", status: "completed" }] },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      createUserToolResultMessage({
+        uuid: "user-todo-result-2",
+        toolUseIds: ["tool-todo-2"],
+        toolUseResult: { newTodos: [{ content: "Task A", status: "completed" }] },
+      }),
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(service.getState().todoTracker?.items[0]?.status).toBe("completed")
+    expect(service.getState().todoTracker?.lastSourceToolUseId).toBe("tool-todo-2")
+  })
+
+  it("clears todoTracker when starting a new session", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-todo-1",
+              name: "TodoWrite",
+              input: { todos: [{ content: "Task", status: "in_progress" }] },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      createUserToolResultMessage({
+        uuid: "user-todo-result-1",
+        toolUseIds: ["tool-todo-1"],
+        toolUseResult: { newTodos: [{ content: "Task", status: "in_progress" }] },
+      }),
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(service.getState().todoTracker).not.toBeNull()
+    await service.newSession()
+    expect(service.getState().todoTracker).toBeNull()
+  })
+
+  it("rehydrates todoTracker from session history on loadSession", async () => {
+    const service = new ConversationService(TEST_CONFIG, undefined, {
+      createQuery: () => createFakeQuery(),
+      getQueryMetadata: async () => createEmptyMetadata(),
+      getSessionMessages: async () => [
+        {
+          type: "assistant",
+          uuid: "assistant-1",
+          parent_tool_use_id: null,
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-todo-1",
+                name: "TodoWrite",
+                input: { todos: [{ content: "Archived task", status: "completed" }] },
+              },
+            ],
+          },
+        },
+        createUserToolResultMessage({
+          uuid: "user-todo-result-1",
+          toolUseIds: ["tool-todo-1"],
+          toolUseResult: { newTodos: [{ content: "Archived task", status: "completed" }] },
+        }),
+      ],
+      listSessions: async () => [],
+      loadSupportedMetadata: async () => createEmptyMetadata(),
+      resumeSession: () => createFakeQuery(),
+    })
+
+    await service.loadSession("session-1")
+
+    const { todoTracker } = service.getState()
+    expect(todoTracker).not.toBeNull()
+    expect(todoTracker?.items).toHaveLength(1)
+    expect(todoTracker?.items[0]).toMatchObject({ content: "Archived task", status: "completed" })
+  })
+
   it("maps completed, failed, and stopped task notifications to final task states", async () => {
     const service = await runServiceWithMessages([
       {

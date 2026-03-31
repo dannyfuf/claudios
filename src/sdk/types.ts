@@ -159,3 +159,21 @@ export function sessionSummaryFromSDK(info: SDKSessionInfo): SessionSummary {
     cwd: info.cwd ?? null,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Todo tracker types
+// ---------------------------------------------------------------------------
+
+export type TodoStatus = "pending" | "in_progress" | "completed"
+
+export type TodoItem = {
+  readonly content: string
+  readonly status: TodoStatus
+  readonly activeForm?: string
+}
+
+export type TodoTrackerState = {
+  readonly items: readonly TodoItem[]
+  readonly lastUpdatedAt: Date
+  readonly lastSourceToolUseId: string
+}

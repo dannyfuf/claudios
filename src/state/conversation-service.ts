@@ -25,7 +25,7 @@ import type {
 } from "#sdk/types"
 import { MessageUUID, SessionId, sessionSummaryFromSDK } from "#sdk/types"
 import type { SessionSummary } from "#sdk/types"
-import { extractToolResultIds, normalizeFileToolResult } from "#sdk/tool-result"
+import { extractToolResultIds, normalizeFileToolResult, normalizeTodoToolResult } from "#sdk/tool-result"
 import {
   type AssistantDisplayMessage,
   type ConversationState,
@@ -313,9 +313,12 @@ export class ConversationService {
 
     try {
       const history = await this.dependencies.getSessionMessages(sessionId)
-      const historyMessages = projectSessionHistory(history)
+      const historyState = projectSessionHistory(history)
 
-      this.dispatch({ type: "load_history", messages: historyMessages })
+      this.dispatch({ type: "load_history", messages: historyState.messages })
+      if (historyState.todoTracker) {
+        this.dispatch({ type: "update_todo_tracker", tracker: historyState.todoTracker })
+      }
       this.dispatch({ type: "set_session", sessionId: SessionId(sessionId) })
 
       const queue = await Effect.runPromise(Queue.unbounded<SDKUserMessage>())
@@ -588,20 +591,25 @@ export class ConversationService {
         continue
       }
 
-      const fileChange = normalizeFileToolResult(
-        toolCallMessage.toolCall.name,
-        pickIndexedToolUseResult(msg.tool_use_result, index),
-      )
+      const toolUseResult = pickIndexedToolUseResult(msg.tool_use_result, index)
 
-      if (!fileChange) {
-        continue
+      const fileChange = normalizeFileToolResult(toolCallMessage.toolCall.name, toolUseResult)
+      if (fileChange) {
+        this.updateToolCallById(toolUseId, (toolCall) => ({
+          ...toolCall,
+          status: "completed",
+          fileChange,
+        }))
       }
 
-      this.updateToolCallById(toolUseId, (toolCall) => ({
-        ...toolCall,
-        status: "completed",
-        fileChange,
-      }))
+      const todoTracker = normalizeTodoToolResult(
+        toolCallMessage.toolCall.name,
+        toolUseId,
+        toolUseResult,
+      )
+      if (todoTracker) {
+        this.dispatch({ type: "update_todo_tracker", tracker: todoTracker })
+      }
     }
   }
 
@@ -1272,14 +1280,14 @@ type AssistantBlock =
       readonly toolCall: ToolCall
     }
 
-function projectSessionHistory(history: readonly unknown[]): readonly DisplayMessage[] {
+function projectSessionHistory(history: readonly unknown[]): ConversationState {
   let state = initialConversationState
 
   for (const message of history) {
     state = projectSessionMessage(state, message)
   }
 
-  return state.messages
+  return state
 }
 
 function projectSessionMessage(
@@ -1392,26 +1400,34 @@ function projectHistoryToolResultMessage(
       continue
     }
 
-    const fileChange = normalizeFileToolResult(
-      toolCallMessage.toolCall.name,
-      pickIndexedToolUseResult(message["tool_use_result"], index),
-    )
+    const toolUseResult = pickIndexedToolUseResult(message["tool_use_result"], index)
 
-    if (!fileChange) {
-      continue
+    const fileChange = normalizeFileToolResult(toolCallMessage.toolCall.name, toolUseResult)
+    if (fileChange) {
+      nextState = conversationReducer(nextState, {
+        type: "upsert_tool_call_message",
+        toolCall: {
+          ...toolCallMessage.toolCall,
+          status: "completed",
+          fileChange,
+        },
+        timestamp: toolCallMessage.timestamp,
+        taskId: toolCallMessage.taskId,
+        parentToolUseId: toolCallMessage.parentToolUseId,
+      })
     }
 
-    nextState = conversationReducer(nextState, {
-      type: "upsert_tool_call_message",
-      toolCall: {
-        ...toolCallMessage.toolCall,
-        status: "completed",
-        fileChange,
-      },
-      timestamp: toolCallMessage.timestamp,
-      taskId: toolCallMessage.taskId,
-      parentToolUseId: toolCallMessage.parentToolUseId,
-    })
+    const todoTracker = normalizeTodoToolResult(
+      toolCallMessage.toolCall.name,
+      toolUseId,
+      toolUseResult,
+    )
+    if (todoTracker) {
+      nextState = conversationReducer(nextState, {
+        type: "update_todo_tracker",
+        tracker: todoTracker,
+      })
+    }
   }
 
   return nextState

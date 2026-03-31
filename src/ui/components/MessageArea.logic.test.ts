@@ -3,6 +3,7 @@ import { MessageUUID, type SpawnedTask, type ToolCall } from "#sdk/types"
 import type { DisplayMessage, ThinkingDisplayMessage } from "#state/types"
 import {
   formatTaskKindLabel,
+  formatTodoSummaryLine,
   getToolCallDiffFileChange,
   getTaskContextLabel,
   formatTaskUsage,
@@ -11,6 +12,7 @@ import {
   getTaskStatusPresentation,
   getToolBriefDetail,
   getToolStatusPresentation,
+  getTodoProgress,
   mergeConsecutiveThinkingMessages,
   normalizeToolLabel,
   shouldShowAssistantResponseDivider,
@@ -333,6 +335,134 @@ function createTaskMessage(id: string): DisplayMessage {
     timestamp: new Date("2026-03-30T10:00:03Z"),
   }
 }
+
+describe("getTodoProgress", () => {
+  it("identifies the first in_progress item as the active item", () => {
+    const progress = getTodoProgress([
+      { content: "Done", status: "completed" },
+      { content: "Working", status: "in_progress", activeForm: "working on it" },
+      { content: "Next", status: "pending" },
+    ])
+
+    expect(progress.completedCount).toBe(1)
+    expect(progress.total).toBe(3)
+    expect(progress.activeItem?.content).toBe("Working")
+    expect(progress.currentIndex).toBe(1)
+  })
+
+  it("falls back to the first pending item when nothing is in_progress", () => {
+    const progress = getTodoProgress([
+      { content: "Done", status: "completed" },
+      { content: "Pending one", status: "pending" },
+      { content: "Pending two", status: "pending" },
+    ])
+
+    expect(progress.activeItem?.content).toBe("Pending one")
+  })
+
+  it("returns null activeItem and currentIndex=total when all items are completed", () => {
+    const progress = getTodoProgress([
+      { content: "Done one", status: "completed" },
+      { content: "Done two", status: "completed" },
+    ])
+
+    expect(progress.activeItem).toBeNull()
+    expect(progress.completedCount).toBe(2)
+    expect(progress.currentIndex).toBe(2)
+  })
+
+  it("handles empty list gracefully", () => {
+    const progress = getTodoProgress([])
+    expect(progress.total).toBe(0)
+    expect(progress.completedCount).toBe(0)
+    expect(progress.activeItem).toBeNull()
+  })
+})
+
+describe("formatTodoSummaryLine", () => {
+  it("shows current/total and the active item description", () => {
+    const line = formatTodoSummaryLine([
+      { content: "Step one", status: "completed" },
+      { content: "Step two", status: "in_progress", activeForm: "doing step two" },
+      { content: "Step three", status: "pending" },
+    ])
+
+    expect(line).toBe("2/3 doing step two")
+  })
+
+  it("uses content as fallback when activeForm is absent", () => {
+    const line = formatTodoSummaryLine([
+      { content: "Step one", status: "completed" },
+      { content: "Step two", status: "in_progress" },
+    ])
+
+    expect(line).toBe("2/2 Step two")
+  })
+
+  it("shows a done summary when all items are completed", () => {
+    const line = formatTodoSummaryLine([
+      { content: "A", status: "completed" },
+      { content: "B", status: "completed" },
+    ])
+
+    expect(line).toBe("tasks 2/2 done")
+  })
+
+  it("returns empty string for an empty list", () => {
+    expect(formatTodoSummaryLine([])).toBe("")
+  })
+
+  it("truncates long lines to maxLength", () => {
+    const longActiveForm = "a".repeat(80)
+    const line = formatTodoSummaryLine(
+      [{ content: "Task", status: "in_progress", activeForm: longActiveForm }],
+      20,
+    )
+
+    expect(line.length).toBeLessThanOrEqual(20)
+    expect(line.endsWith("…")).toBe(true)
+  })
+})
+
+describe("normalizeToolLabel (TodoWrite)", () => {
+  it("normalizes TodoWrite to 'tasks'", () => {
+    expect(normalizeToolLabel("TodoWrite")).toBe("tasks")
+    expect(normalizeToolLabel("todowrite")).toBe("tasks")
+    expect(normalizeToolLabel("TODOWRITE")).toBe("tasks")
+  })
+})
+
+describe("getToolBriefDetail (TodoWrite)", () => {
+  it("returns a todo summary for a TodoWrite tool call with a todos array input", () => {
+    const detail = getToolBriefDetail({
+      input: {
+        todos: [
+          { content: "Set up env", status: "completed" },
+          { content: "Write code", status: "in_progress", activeForm: "writing code" },
+          { content: "Run tests", status: "pending" },
+        ],
+      },
+    })
+
+    expect(detail).toBe("2/3 writing code")
+  })
+
+  it("falls back to normal key scanning for non-TodoWrite inputs", () => {
+    const detail = getToolBriefDetail({
+      input: { file_path: "/src/index.ts" },
+    })
+
+    expect(detail).toBe("/src/index.ts")
+  })
+
+  it("returns empty string when input has an empty todos array", () => {
+    const detail = getToolBriefDetail({
+      input: { todos: [] },
+    })
+
+    expect(detail).toBe("")
+  })
+})
 
 function createToolCall(id: string, name: string): ToolCall {
   return {

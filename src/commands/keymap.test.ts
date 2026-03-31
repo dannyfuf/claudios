@@ -31,6 +31,14 @@ describe("Keymap", () => {
     expect(keymap.resolve("i", "global", "plain")).toBeNull()
   })
 
+  it("resolves the task list toggle shortcut in all modes", () => {
+    const keymap = new Keymap()
+
+    expect(keymap.resolve("ctrl+t", "global", "plain")).toBe("todos.toggle")
+    expect(keymap.resolve("ctrl+t", "global", "insert")).toBe("todos.toggle")
+    expect(keymap.resolve("ctrl+t", "global", "normal")).toBe("todos.toggle")
+  })
+
   it("applies action-based key overrides to picker shortcuts", () => {
     const keymap = new Keymap({
       "model.openPicker": "alt+m",

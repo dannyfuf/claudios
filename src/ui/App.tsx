@@ -46,6 +46,7 @@ import { ModelPickerDialogContent } from "#ui/components/ModelPickerOverlay"
 import { SessionPickerDialogContent } from "#ui/components/SessionPickerOverlay"
 import { KeymapHelpContent } from "#ui/components/KeymapHelpOverlay"
 import { McpOverlayContent } from "#ui/components/McpOverlay"
+import { TodoOverlayContent } from "#ui/components/TodoOverlay"
 import { getSlashPickerQuery } from "#ui/slash-picker"
 import { listWorkspaceFiles } from "#ui/workspace-files"
 import { handleNormalModeKey, type VimPendingOperator } from "#ui/vim"
@@ -98,6 +99,7 @@ function AppContent() {
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
   const promptText = useConversationSelector((s) => s.promptText)
+  const todoTracker = useConversationSelector((s) => s.todoTracker)
   const availableCommands = useConversationSelector((s) => s.availableCommands)
   const availableModels = useConversationSelector((s) => s.availableModels)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -313,6 +315,20 @@ function AppContent() {
       }
     }
   }, [applyModelChange, currentModel, dialog, service, vimEnabled])
+
+  const openTodoOverlay = useCallback(() => {
+    dialog.closeAll()
+    void dialog.alert({
+      content: ({ dismiss, dialogId }: AlertContext) => (
+        <TodoOverlayContent
+          items={todoTracker?.items ?? []}
+          dismiss={dismiss}
+          dialogId={dialogId}
+        />
+      ),
+      size: "large",
+    })
+  }, [dialog, todoTracker])
 
   const runLocalSlashCommand = useCallback(
     async (command: ParsedLocalSlashCommand) => {
@@ -618,6 +634,9 @@ function AppContent() {
         case "keys.help":
           openKeymapHelp()
           break
+        case "todos.toggle":
+          openTodoOverlay()
+          break
         case "permission.allow":
           service.resolvePermission(true)
           break
@@ -633,6 +652,7 @@ function AppContent() {
       openKeymapHelp,
       openModelPicker,
       openSessionPicker,
+      openTodoOverlay,
       promptText,
       service,
       submitComposer,
@@ -779,7 +799,7 @@ function AppContent() {
             submitComposer()
           }}
         />
-        <StatusBar />
+        <StatusBar onTodosClick={openTodoOverlay} />
         {picker && !isDialogOpen ? (
           <CompletionOverlay
             title={picker.title}

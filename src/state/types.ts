@@ -14,6 +14,7 @@ import type {
   ModelInfo,
   AccountInfo,
   SlashCommand,
+  TodoTrackerState,
 } from "#sdk/types"
 import { DEFAULT_THEME_NAME, type ThemeName } from "#ui/theme"
 
@@ -139,6 +140,7 @@ export type ConversationState = {
   readonly availableModels: readonly ModelInfo[]
   readonly availableCommands: readonly SlashCommand[]
   readonly account: AccountInfo | null
+  readonly todoTracker: TodoTrackerState | null
 }
 
 export const initialConversationState: ConversationState = {
@@ -163,6 +165,7 @@ export const initialConversationState: ConversationState = {
   availableModels: [],
   availableCommands: [],
   account: null,
+  todoTracker: null,
 }
 
 export function getInteractionMode(
@@ -214,6 +217,7 @@ export type ConversationAction =
   | { readonly type: "set_error"; readonly message: string; readonly recoverable: boolean }
   | { readonly type: "set_message_streaming"; readonly uuid: MessageUUID; readonly isStreaming: boolean }
   | { readonly type: "load_history"; readonly messages: readonly DisplayMessage[] }
+  | { readonly type: "update_todo_tracker"; readonly tracker: TodoTrackerState }
 
 // ---------------------------------------------------------------------------
 // Reducer
@@ -367,6 +371,7 @@ export function conversationReducer(
         messages: [],
         totalCostUsd: 0,
         totalTokens: 0,
+        todoTracker: null,
       }
 
     case "set_error":
@@ -377,6 +382,9 @@ export function conversationReducer(
 
     case "load_history":
       return { ...state, messages: action.messages }
+
+    case "update_todo_tracker":
+      return { ...state, todoTracker: action.tracker }
 
     case "set_message_streaming": {
       const updated = state.messages.map((msg) =>

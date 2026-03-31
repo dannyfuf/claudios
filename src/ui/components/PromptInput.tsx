@@ -7,7 +7,7 @@
 import type { RefObject } from "react"
 import type { InputRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
-import type { StartupState } from "#state/types"
+import { getInteractionMode, type StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { useConversationService, useConversationSelector, useThemePalette } from "#ui/hooks"
 
@@ -24,24 +24,27 @@ export function PromptInput(props: PromptInputProps) {
   const service = useConversationService()
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
-  const vimMode = useConversationSelector((s) => s.vimMode)
+  const interactionMode = useConversationSelector(getInteractionMode)
   const promptText = useConversationSelector((s) => s.promptText)
 
   const isEditingDisabled =
     sessionState.status === "running" ||
     sessionState.status === "awaiting_permission"
 
-  // In normal mode, input is not focused (keyboard goes to keymap handler)
   const isFocused =
-    vimMode === "insert" &&
+    interactionMode !== "normal" &&
     sessionState.status !== "awaiting_permission" &&
     props.hasModalFocus !== true
 
+  const handlePromptMouseDown = () => {
+    if (!isEditingDisabled) {
+      service.setVimMode("insert")
+    }
+  }
+
   const isCompact = width < 92
-  const showsLoadingIndicator =
-    sessionState.status === "running" || isStartupLoading(startup)
+  const showsLoadingIndicator = isStartupLoading(startup)
   const promptTextColor = isEditingDisabled || !props.canSubmit ? theme.mutedText : theme.primary
-  const loadingIndicatorColor = sessionState.status === "running" ? theme.primary : theme.warning
   const borderColor = isFocused ? theme.borderStrong : theme.borderSubtle
   const placeholder = isEditingDisabled
     ? "Waiting for Claude..."
@@ -60,11 +63,12 @@ export function PromptInput(props: PromptInputProps) {
         borderColor={borderColor}
         backgroundColor={theme.surface}
         paddingX={1}
+        onMouseDown={handlePromptMouseDown}
       >
         <box flexDirection="row" gap={1} alignItems="center">
           <box width={1} minWidth={1} alignItems="center" justifyContent="center">
             {showsLoadingIndicator ? (
-              <LoadingIndicator color={loadingIndicatorColor} />
+              <LoadingIndicator color={theme.warning} />
             ) : (
               <text>
                 <span fg={promptTextColor}>
@@ -85,6 +89,7 @@ export function PromptInput(props: PromptInputProps) {
                 props.onSubmit()
               }
             }}
+            onMouseDown={handlePromptMouseDown}
             ref={props.inputRef}
             placeholder={placeholder}
             focused={isFocused}

@@ -16,8 +16,10 @@ import type { InputRenderable } from "@opentui/core"
 import { useDialogKeyboard } from "@opentui-ui/dialog/react"
 import type { DialogId } from "@opentui-ui/dialog/react"
 import type { ModelInfo } from "#sdk/types"
+import { getInteractionMode } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
-import { useConversationSelector, useConversationService, useDebouncedValue, useThemePalette } from "#ui/hooks"
+import { useConversationSelector, useConversationService, useThemePalette } from "#ui/hooks"
+import { filterByPrefixQuery } from "#ui/picker-filter"
 import { resolvePickerKeyboardAction } from "#ui/picker-keyboard"
 
 type ModelPickerDialogContentProps = {
@@ -32,14 +34,15 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
   const theme = useThemePalette()
   const service = useConversationService()
   const { width, height } = useTerminalDimensions()
+  const vimEnabled = useConversationSelector((s) => s.vimEnabled)
   const vimMode = useConversationSelector((s) => s.vimMode)
+  const interactionMode = useConversationSelector(getInteractionMode)
   const availableModels = useConversationSelector((s) => s.availableModels)
   const metadata = useConversationSelector((s) => s.startup.metadata)
 
   const [filterText, setFilterText] = useState("")
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<InputRenderable | null>(null)
-  const debouncedFilterText = useDebouncedValue(filterText, 120)
 
   const isCompact = width < 96
   // Dialog auto-sizes height to content — set explicit height so the
@@ -48,15 +51,12 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
   const panelHeight = Math.max(12, Math.min(height - 8, 24))
 
   const filteredModels = useMemo(() => {
-    if (!debouncedFilterText.trim()) return availableModels
-    const query = debouncedFilterText.toLowerCase()
-    return availableModels.filter(
-      (model) =>
-        model.displayName.toLowerCase().includes(query) ||
-        model.value.toLowerCase().includes(query) ||
-        model.description.toLowerCase().includes(query),
-    )
-  }, [availableModels, debouncedFilterText])
+    return filterByPrefixQuery(availableModels, filterText, (model) => [
+      model.displayName,
+      model.value,
+      model.description,
+    ])
+  }, [availableModels, filterText])
 
   const options = useMemo(
     () =>
@@ -68,7 +68,8 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
     [filteredModels, isCompact],
   )
 
-  const isInputFocused = vimMode === "insert"
+  const isListFocused = vimEnabled ? interactionMode === "normal" : vimMode === "normal"
+  const isInputFocused = !isListFocused
 
   const emptyMessage = filterText.trim()
     ? "No matching models"
@@ -77,17 +78,25 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
   // Reset selected index when filter changes
   useEffect(() => {
     setSelectedIndex(0)
-  }, [debouncedFilterText])
+  }, [filterText])
 
-  const handleSelect = useCallback(() => {
-    const model = filteredModels[selectedIndex]
+  const handleSelect = useCallback((index = selectedIndex) => {
+    const model = filteredModels[index]
     if (model) {
       resolve(model.value)
     }
   }, [filteredModels, resolve, selectedIndex])
 
+  const focusInput = useCallback(() => {
+    service.setVimMode("insert")
+  }, [service])
+
+  const focusList = useCallback(() => {
+    service.setVimMode("normal")
+  }, [service])
+
   useDialogKeyboard((key) => {
-    const action = resolvePickerKeyboardAction(key, vimMode)
+    const action = resolvePickerKeyboardAction(key, interactionMode)
     switch (action.kind) {
       case "close":
         dismiss()
@@ -134,15 +143,19 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
           height={3}
           border
           borderStyle="rounded"
-          borderColor={theme.borderSubtle}
+          borderColor={isInputFocused ? theme.borderStrong : theme.borderSubtle}
           backgroundColor={theme.surfaceAlt}
           paddingX={1}
+          onMouseDown={focusInput}
         >
           <input
             ref={inputRef}
             value={filterText}
-            onChange={setFilterText}
-            onSubmit={handleSelect}
+            onInput={setFilterText}
+            onSubmit={() => {
+              handleSelect()
+            }}
+            onMouseDown={focusInput}
             focused={isInputFocused}
             placeholder="Search models or identifiers"
             backgroundColor={theme.surfaceAlt}
@@ -168,24 +181,34 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
             <span fg={theme.error}>{metadata.message}</span>
           </text>
         </box>
-      ) : options.length === 0 ? (
+        ) : options.length === 0 ? (
         <box flexGrow={1} justifyContent="center" alignItems="center">
           <text>
             <span fg={theme.mutedText}>{emptyMessage}</span>
           </text>
         </box>
       ) : (
-        <box flexGrow={1} minHeight={3} overflow="hidden">
+        <box
+          flexGrow={1}
+          minHeight={3}
+          overflow="hidden"
+          border
+          borderStyle="rounded"
+          borderColor={isListFocused ? theme.borderStrong : theme.borderSubtle}
+          onMouseDown={focusList}
+        >
           <select
             options={options}
             selectedIndex={selectedIndex}
             height="100%"
-            focused={false}
+            focused={isListFocused}
             selectedBackgroundColor={theme.selection}
             selectedTextColor={theme.selectionText}
             showScrollIndicator
-            onSelect={() => {
-              return
+            onMouseDown={focusList}
+            onSelect={(index) => {
+              setSelectedIndex(index)
+              handleSelect(index)
             }}
           />
         </box>
@@ -194,9 +217,12 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
       <box height={1} justifyContent="space-between" flexDirection="row">
         <text>
           <span fg={theme.mutedText}>
-            {isCompact
-              ? "i filter  j/k move  Enter select  Esc close"
-              : "Insert filters  Normal j/k move  Enter select  Esc back/close"}
+            {getPickerFooterHint({
+              isCompact,
+              vimEnabled,
+              isListFocused,
+              actionLabel: "select",
+            })}
           </span>
         </text>
       </box>
@@ -219,4 +245,29 @@ function formatModelDescription(model: ModelInfo, maxLength: number): string {
 function truncateEnd(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value
   return `${value.slice(0, Math.max(1, maxLength - 1))}…`
+}
+
+function getPickerFooterHint(input: {
+  readonly isCompact: boolean
+  readonly vimEnabled: boolean
+  readonly isListFocused: boolean
+  readonly actionLabel: string
+}): string {
+  const moveLabel = "Up/Down"
+
+  if (!input.vimEnabled) {
+    return input.isListFocused
+      ? `Results active  ${moveLabel} move  Enter ${input.actionLabel}  Esc close`
+      : `Filter active  ${moveLabel} move  Enter ${input.actionLabel}  Esc close`
+  }
+
+  if (input.isListFocused) {
+    return input.isCompact
+      ? `Results active  i filter  j/k move  Enter ${input.actionLabel}`
+      : `Results active  i filter  j/k move  Enter ${input.actionLabel}  Esc close`
+  }
+
+  return input.isCompact
+    ? `Filter active  Esc results  ${moveLabel} move  Enter ${input.actionLabel}`
+    : `Filter active  Esc results  ${moveLabel} move  Enter ${input.actionLabel}`
 }

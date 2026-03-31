@@ -1,5 +1,5 @@
 import type { KeyEvent } from "@opentui/core"
-import type { VimMode } from "#state/types"
+import type { InteractionMode, VimMode } from "#state/types"
 
 export type PickerKeyboardAction =
   | { readonly kind: "none" }
@@ -10,27 +10,29 @@ export type PickerKeyboardAction =
 
 export function resolvePickerKeyboardAction(
   key: Pick<KeyEvent, "name" | "sequence">,
-  vimMode: VimMode,
+  interactionMode: InteractionMode,
 ): PickerKeyboardAction {
   if (key.name === "enter" || key.name === "return") {
     return { kind: "select" }
   }
 
-  if (key.name === "down" || (vimMode === "normal" && key.sequence === "j")) {
+  if (key.name === "down" || (interactionMode === "normal" && key.sequence === "j")) {
     return { kind: "move", delta: 1 }
   }
 
-  if (key.name === "up" || (vimMode === "normal" && key.sequence === "k")) {
+  if (key.name === "up" || (interactionMode === "normal" && key.sequence === "k")) {
     return { kind: "move", delta: -1 }
   }
 
   if (key.name === "escape") {
-    return vimMode === "insert"
-      ? { kind: "setMode", mode: "normal" }
-      : { kind: "close" }
+    if (interactionMode === "insert") {
+      return { kind: "setMode", mode: "normal" }
+    }
+
+    return { kind: "close" }
   }
 
-  if (vimMode === "normal" && key.sequence === "i") {
+  if (interactionMode === "normal" && key.sequence === "i") {
     return { kind: "setMode", mode: "insert" }
   }
 

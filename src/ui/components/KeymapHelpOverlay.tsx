@@ -69,7 +69,7 @@ export function KeymapHelpContent(props: KeymapHelpContentProps) {
 
       <box paddingX={1} paddingBottom={1}>
         <text>
-          <span fg={theme.mutedText}>Available shortcuts by context and vim mode.</span>
+          <span fg={theme.mutedText}>Available shortcuts by context and interaction mode. Plain mode is the default.</span>
         </text>
       </box>
 

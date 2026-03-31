@@ -17,8 +17,10 @@ import type { InputRenderable } from "@opentui/core"
 import { useDialogKeyboard } from "@opentui-ui/dialog/react"
 import type { DialogId } from "@opentui-ui/dialog/react"
 import type { SessionSummary } from "#sdk/types"
+import { getInteractionMode } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
-import { useConversationSelector, useConversationService, useDebouncedValue, useThemePalette } from "#ui/hooks"
+import { useConversationSelector, useConversationService, useThemePalette } from "#ui/hooks"
+import { filterByPrefixQuery } from "#ui/picker-filter"
 import { resolvePickerKeyboardAction } from "#ui/picker-keyboard"
 
 type SessionPickerDialogContentProps = {
@@ -32,7 +34,9 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
   const theme = useThemePalette()
   const service = useConversationService()
   const { width, height } = useTerminalDimensions()
+  const vimEnabled = useConversationSelector((s) => s.vimEnabled)
   const vimMode = useConversationSelector((s) => s.vimMode)
+  const interactionMode = useConversationSelector(getInteractionMode)
 
   const [sessions, setSessions] = useState<readonly SessionSummary[]>([])
   const [filterText, setFilterText] = useState("")
@@ -40,7 +44,6 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const inputRef = useRef<InputRenderable | null>(null)
-  const debouncedFilterText = useDebouncedValue(filterText, 120)
 
   const isCompact = width < 96
   // Dialog auto-sizes height to content — set explicit height so the
@@ -73,15 +76,12 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
   }, [service])
 
   const filteredSessions = useMemo(() => {
-    if (!debouncedFilterText.trim()) return sessions
-    const query = debouncedFilterText.toLowerCase()
-    return sessions.filter(
-      (session) =>
-        session.title.toLowerCase().includes(query) ||
-        (session.cwd?.toLowerCase().includes(query) ?? false) ||
-        (session.gitBranch?.toLowerCase().includes(query) ?? false),
-    )
-  }, [debouncedFilterText, sessions])
+    return filterByPrefixQuery(sessions, filterText, (session) => [
+      session.title,
+      session.cwd,
+      session.gitBranch,
+    ])
+  }, [filterText, sessions])
 
   const options = useMemo(
     () =>
@@ -93,22 +93,31 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
     [filteredSessions, isCompact],
   )
 
-  const isInputFocused = vimMode === "insert"
+  const isListFocused = vimEnabled ? interactionMode === "normal" : vimMode === "normal"
+  const isInputFocused = !isListFocused
 
   // Reset selected index when filter changes
   useEffect(() => {
     setSelectedIndex(0)
-  }, [debouncedFilterText])
+  }, [filterText])
 
-  const handleSelect = useCallback(() => {
-    const session = filteredSessions[selectedIndex]
+  const handleSelect = useCallback((index = selectedIndex) => {
+    const session = filteredSessions[index]
     if (session) {
       resolve(session.id)
     }
   }, [filteredSessions, resolve, selectedIndex])
 
+  const focusInput = useCallback(() => {
+    service.setVimMode("insert")
+  }, [service])
+
+  const focusList = useCallback(() => {
+    service.setVimMode("normal")
+  }, [service])
+
   useDialogKeyboard((key) => {
-    const action = resolvePickerKeyboardAction(key, vimMode)
+    const action = resolvePickerKeyboardAction(key, interactionMode)
     switch (action.kind) {
       case "close":
         dismiss()
@@ -148,15 +157,19 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
           height={3}
           border
           borderStyle="rounded"
-          borderColor={theme.borderSubtle}
+          borderColor={isInputFocused ? theme.borderStrong : theme.borderSubtle}
           backgroundColor={theme.surfaceAlt}
           paddingX={1}
+          onMouseDown={focusInput}
         >
           <input
             ref={inputRef}
             value={filterText}
-            onChange={setFilterText}
-            onSubmit={handleSelect}
+            onInput={setFilterText}
+            onSubmit={() => {
+              handleSelect()
+            }}
+            onMouseDown={focusInput}
             focused={isInputFocused}
             placeholder="Search sessions, cwd, or branch"
             backgroundColor={theme.surfaceAlt}
@@ -202,17 +215,27 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
             </box>
           ) : null}
 
-          <box flexGrow={1} minHeight={3} overflow="hidden">
+          <box
+            flexGrow={1}
+            minHeight={3}
+            overflow="hidden"
+            border
+            borderStyle="rounded"
+            borderColor={isListFocused ? theme.borderStrong : theme.borderSubtle}
+            onMouseDown={focusList}
+          >
             <select
               options={options}
               selectedIndex={selectedIndex}
               height="100%"
-              focused={false}
+              focused={isListFocused}
               selectedBackgroundColor={theme.selection}
               selectedTextColor={theme.selectionText}
               showScrollIndicator
-              onSelect={() => {
-                return
+              onMouseDown={focusList}
+              onSelect={(index) => {
+                setSelectedIndex(index)
+                handleSelect(index)
               }}
             />
           </box>
@@ -222,9 +245,12 @@ export function SessionPickerDialogContent(props: SessionPickerDialogContentProp
       <box height={1} justifyContent="space-between" flexDirection="row">
         <text>
           <span fg={theme.mutedText}>
-            {isCompact
-              ? "i filter  j/k move  Enter resume  Esc close"
-              : "Insert filters  Normal j/k move  Enter resume  Esc back/close"}
+            {getPickerFooterHint({
+              isCompact,
+              vimEnabled,
+              isListFocused,
+              actionLabel: "resume",
+            })}
           </span>
         </text>
       </box>
@@ -271,4 +297,27 @@ function truncateMiddle(value: string, maxLength: number): string {
   const start = Math.ceil(visible / 2)
   const end = Math.floor(visible / 2)
   return `${value.slice(0, start)}…${value.slice(value.length - end)}`
+}
+
+function getPickerFooterHint(input: {
+  readonly isCompact: boolean
+  readonly vimEnabled: boolean
+  readonly isListFocused: boolean
+  readonly actionLabel: string
+}): string {
+  const moveLabel = "Up/Down"
+
+  if (!input.vimEnabled) {
+    return input.isListFocused
+      ? `Results active  ${moveLabel} move  Enter ${input.actionLabel}  Esc close`
+      : `Filter active  ${moveLabel} move  Enter ${input.actionLabel}  Esc close`
+  }
+
+  if (input.isListFocused) {
+    return input.isCompact
+      ? `Results active  i filter  j/k move  Enter ${input.actionLabel}`
+      : `Results active  i filter  j/k move  Enter ${input.actionLabel}  Esc close`
+  }
+
+  return `Filter active  Esc results  ${moveLabel} move  Enter ${input.actionLabel}`
 }

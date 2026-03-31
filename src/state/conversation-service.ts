@@ -101,6 +101,7 @@ export class ConversationService {
         model: config.defaultModel,
         permissionMode: config.defaultPermissionMode,
         themeName: config.theme,
+        showThinking: config.showThinking,
         diffMode: config.diffMode,
       }
   }
@@ -155,6 +156,11 @@ export class ConversationService {
 
   setPromptText(text: string): void {
     this.dispatch({ type: "set_prompt_text", text })
+  }
+
+  setVimEnabled(enabled: boolean): void {
+    this.dispatch({ type: "set_vim_enabled", enabled })
+    this.dispatch({ type: "set_vim_mode", mode: "insert" })
   }
 
   setVimMode(mode: ConversationState["vimMode"]): void {
@@ -336,6 +342,16 @@ export class ConversationService {
     const nextMode = this.state.diffMode === "unified" ? "split" : "unified"
     this.dispatch({ type: "set_diff_mode", diffMode: nextMode })
     return nextMode
+  }
+
+  setShowThinking(showThinking: boolean): void {
+    this.dispatch({ type: "set_show_thinking", showThinking })
+  }
+
+  toggleThinkingVisibility(): boolean {
+    const nextValue = !this.state.showThinking
+    this.dispatch({ type: "set_show_thinking", showThinking: nextValue })
+    return nextValue
   }
 
   clearMessages(): void {

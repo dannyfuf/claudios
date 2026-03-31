@@ -324,6 +324,7 @@ async function main(): Promise<void> {
   const mountRenderer = async () => {
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
+      useMouse: true,
     })
     root = createRoot(renderer)
     root.render(renderApp())

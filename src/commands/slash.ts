@@ -6,7 +6,12 @@ type LocalSlashCommandEntry = {
   readonly description: string
   readonly insertText: string
   readonly acceptsArguments: boolean
+  readonly submitOnExactMatch?: boolean
 }
+
+type ParseVimCommandModeResult =
+  | { readonly ok: true; readonly mode: VimCommandMode }
+  | { readonly ok: false; readonly error: string }
 
 export const PERMISSION_MODES = [
   "default",
@@ -17,6 +22,7 @@ export const PERMISSION_MODES = [
 ] as const
 
 export type PermissionModeName = (typeof PERMISSION_MODES)[number]
+export type VimCommandMode = "toggle" | "on" | "off"
 
 export const LOCAL_SLASH_COMMANDS = [
   {
@@ -25,6 +31,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Exit the TUI",
     insertText: "/q",
     acceptsArguments: false,
+    submitOnExactMatch: true,
   },
   {
     name: "new",
@@ -32,6 +39,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Start a new session",
     insertText: "/new",
     acceptsArguments: false,
+    submitOnExactMatch: true,
   },
   {
     name: "sessions",
@@ -39,6 +47,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Open the session picker",
     insertText: "/sessions",
     acceptsArguments: false,
+    submitOnExactMatch: true,
   },
   {
     name: "clear",
@@ -46,6 +55,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Clear the message area",
     insertText: "/clear",
     acceptsArguments: false,
+    submitOnExactMatch: true,
   },
   {
     name: "model",
@@ -53,6 +63,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Switch model",
     insertText: "/model ",
     acceptsArguments: true,
+    submitOnExactMatch: false,
   },
   {
     name: "perm",
@@ -60,6 +71,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Change permission mode",
     insertText: "/perm ",
     acceptsArguments: true,
+    submitOnExactMatch: false,
   },
   {
     name: "theme",
@@ -67,6 +79,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Switch color theme",
     insertText: "/theme ",
     acceptsArguments: true,
+    submitOnExactMatch: false,
   },
   {
     name: "diff",
@@ -74,6 +87,23 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Toggle unified/split diff view",
     insertText: "/diff",
     acceptsArguments: false,
+    submitOnExactMatch: true,
+  },
+  {
+    name: "thinking",
+    aliases: [],
+    description: "Show or hide thinking rows",
+    insertText: "/thinking ",
+    acceptsArguments: true,
+    submitOnExactMatch: false,
+  },
+  {
+    name: "vim",
+    aliases: [],
+    description: "Enable, disable, or toggle vim mode",
+    insertText: "/vim",
+    acceptsArguments: true,
+    submitOnExactMatch: true,
   },
   {
     name: "keys",
@@ -81,6 +111,7 @@ export const LOCAL_SLASH_COMMANDS = [
     description: "Show keybinding reference",
     insertText: "/keys",
     acceptsArguments: false,
+    submitOnExactMatch: true,
   },
 ] as const satisfies readonly LocalSlashCommandEntry[]
 
@@ -118,6 +149,23 @@ export function isPermissionModeName(value: string): value is PermissionModeName
   return PERMISSION_MODES.some((mode) => mode === value)
 }
 
+export function parseVimCommandMode(args: readonly string[]): ParseVimCommandModeResult {
+  if (args.length === 0) {
+    return { ok: true, mode: "toggle" }
+  }
+
+  if (args.length > 1) {
+    return { ok: false, error: "Invalid vim mode: expected on, off, or toggle" }
+  }
+
+  const value = args[0]?.trim().toLowerCase()
+  if (value === "on" || value === "off" || value === "toggle") {
+    return { ok: true, mode: value }
+  }
+
+  return { ok: false, error: "Invalid vim mode: expected on, off, or toggle" }
+}
+
 export function filterLocalSlashCommands(query: string): readonly LocalSlashCommandDefinition[] {
   return rankPrefixMatches(LOCAL_SLASH_COMMANDS, normalizeSlashQuery(query), (command) => ({
     prefix: [command.name, ...command.aliases],
@@ -135,7 +183,7 @@ export function listSlashCommandSuggestions(
     value: command.insertText,
     source: "local" as const,
     commandName: command.name,
-    submitOnExactMatch: !command.acceptsArguments,
+    submitOnExactMatch: command.submitOnExactMatch,
   }))
 
   const sdkSuggestions = rankPrefixMatches(sdkCommands, normalizedQuery, (command) => ({

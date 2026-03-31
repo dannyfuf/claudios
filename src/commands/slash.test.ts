@@ -37,6 +37,14 @@ describe("slash commands", () => {
       name: "theme",
       args: ["tokyo-night"],
     })
+    expect(parseLocalSlashCommand("/thinking off")).toEqual({
+      name: "thinking",
+      args: ["off"],
+    })
+    expect(parseLocalSlashCommand("/vim on")).toEqual({
+      name: "vim",
+      args: ["on"],
+    })
   })
 
   it("rejects non-slash input and unknown local slash commands", () => {
@@ -69,29 +77,45 @@ describe("slash commands", () => {
     expect(resolveComposerSubmission("   ")).toEqual({ kind: "empty" })
   })
 
-  it("submits exact local matches only when the command takes no arguments", () => {
+  it("submits exact local matches only when the command allows it", () => {
     const [quitSuggestion] = listSlashCommandSuggestions("/quit", SDK_COMMANDS)
     const [themeSuggestion] = listSlashCommandSuggestions("/theme", SDK_COMMANDS)
+    const [vimSuggestion] = listSlashCommandSuggestions("/vim", SDK_COMMANDS)
 
     expect(quitSuggestion).toBeDefined()
     expect(themeSuggestion).toBeDefined()
+    expect(vimSuggestion).toBeDefined()
     expect(shouldSubmitSlashSuggestion("/quit", quitSuggestion!)).toBe(true)
     expect(shouldSubmitSlashSuggestion("/theme", themeSuggestion!)).toBe(false)
+    expect(shouldSubmitSlashSuggestion("/vim", vimSuggestion!)).toBe(true)
   })
 
   it("returns all commands when the query is just a bare slash", () => {
     const suggestions = listSlashCommandSuggestions("/", SDK_COMMANDS)
     // Should include all local + all SDK commands
-    expect(suggestions.length).toBeGreaterThanOrEqual(9 + SDK_COMMANDS.length)
+    expect(suggestions.length).toBeGreaterThanOrEqual(11 + SDK_COMMANDS.length)
   })
 
   it("normalizes queries with leading whitespace for filtering", () => {
     // normalizeSlashQuery strips the leading "/" — the App layer trims leading
     // whitespace before passing the token. Verify the underlying filter still
     // works correctly for bare tokens.
-    expect(filterLocalSlashCommands("").length).toBe(9) // all local commands
+    expect(filterLocalSlashCommands("").length).toBe(11) // all local commands
     expect(filterLocalSlashCommands("mo").map((c) => c.name)).toEqual(["model"])
     expect(filterLocalSlashCommands("ses").map((c) => c.name)).toEqual(["sessions"])
+  })
+
+  it("suggests and parses the thinking visibility command", () => {
+    expect(filterLocalSlashCommands("thi").map((command) => command.name)).toEqual(["thinking"])
+    expect(parseLocalSlashCommand("/thinking")).toEqual({ name: "thinking", args: [] })
+    expect(parseLocalSlashCommand("/thinking on")).toEqual({ name: "thinking", args: ["on"] })
+    expect(parseLocalSlashCommand("/thinking off")).toEqual({ name: "thinking", args: ["off"] })
+  })
+
+  it("suggests and parses the vim toggle command", () => {
+    expect(filterLocalSlashCommands("vi").map((command) => command.name)).toEqual(["vim"])
+    expect(parseLocalSlashCommand("/vim")).toEqual({ name: "vim", args: [] })
+    expect(parseLocalSlashCommand("/vim off")).toEqual({ name: "vim", args: ["off"] })
   })
 
   it("parses local slash commands with leading whitespace", () => {

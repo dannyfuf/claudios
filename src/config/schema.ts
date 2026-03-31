@@ -24,6 +24,7 @@ export const ConfigSchema = z.object({
     .default("bypassPermissions"),
   keybindings: z.record(z.string(), z.string()).default({}),
   diffMode: z.enum(["unified", "split"]).default("unified"),
+  showThinking: z.boolean().default(true),
   claudePath: z.string().default("claude"),
 })
 

@@ -1,11 +1,12 @@
 /**
  * StatusBar — bottom line of the 4-zone layout.
  *
- * Shows: vim mode | session state | keybind hints
+ * Shows: interaction mode | session state | keybind hints
  */
 
 import { useTerminalDimensions } from "@opentui/react"
-import type { SessionState, StartupState } from "#state/types"
+import type { SpinnerOptions } from "opentui-spinner"
+import { getInteractionMode, type SessionState, type StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { AppBadge } from "#ui/components/StyledBadge"
 import { useConversationSelector, useThemePalette } from "#ui/hooks"
@@ -13,22 +14,25 @@ import { useConversationSelector, useThemePalette } from "#ui/hooks"
 export function StatusBar() {
   const theme = useThemePalette()
   const { width } = useTerminalDimensions()
-  const vimMode = useConversationSelector((s) => s.vimMode)
+  const interactionMode = useConversationSelector(getInteractionMode)
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
   const permissionMode = useConversationSelector((s) => s.permissionMode)
   const diffMode = useConversationSelector((s) => s.diffMode)
+  const showThinking = useConversationSelector((s) => s.showThinking)
 
   const isCompact = width < 96
   const modeLabel =
-    vimMode === "insert"
-      ? isCompact
-        ? "INS"
-        : "INSERT"
-      : isCompact
-        ? "NRM"
-        : "NORMAL"
-  const modeTextColor = vimMode === "insert" ? theme.success : theme.primary
+    interactionMode === "plain"
+      ? "PLAIN"
+      : interactionMode === "insert"
+        ? isCompact
+          ? "INS"
+          : "VIM INSERT"
+        : isCompact
+          ? "NRM"
+          : "VIM NORMAL"
+  const modeTextColor = interactionMode === "normal" ? theme.primary : theme.success
 
   const sessionBadge = getSessionBadge(sessionState, isCompact, theme)
   const startupBadge = getStartupBadge(startup, isCompact, theme)
@@ -39,6 +43,9 @@ export function StatusBar() {
       ? "split"
       : "unified"
     : `${diffMode} diff`
+  const thinkingLabel = isCompact
+    ? `think ${showThinking ? "on" : "off"}`
+    : `thinking ${showThinking ? "on" : "off"}`
   const hints =
     width < 84
       ? "^P model  ^R sessions  ^C quit"
@@ -75,6 +82,11 @@ export function StatusBar() {
         <text>
           <span fg={theme.mutedText}>{diffLabel}</span>
         </text>
+        {width >= 110 ? (
+          <text>
+            <span fg={theme.mutedText}>{thinkingLabel}</span>
+          </text>
+        ) : null}
         <text>
           <span fg={theme.mutedText}>{hints}</span>
         </text>
@@ -87,13 +99,14 @@ type StatusBadgeModel = {
   readonly label: string
   readonly textColor: string
   readonly loading: boolean
+  readonly spinnerName?: SpinnerOptions["name"]
 }
 
 function StatusBadge({ badge }: { readonly badge: StatusBadgeModel }) {
   if (badge.loading) {
     return (
       <box flexDirection="row" gap={1} paddingX={1} minWidth={0} alignItems="center">
-        <LoadingIndicator color={badge.textColor} />
+        <LoadingIndicator color={badge.textColor} name={badge.spinnerName} />
         <text>
           <span fg={badge.textColor}>{badge.label}</span>
         </text>
@@ -114,9 +127,10 @@ function getSessionBadge(
       return null
     case "running":
       return {
-        label: isCompact ? "running" : "running now",
+        label: isCompact ? "working" : "Claude working",
         textColor: theme.primary,
         loading: true,
+        spinnerName: "balloon",
       }
     case "awaiting_permission":
       return {

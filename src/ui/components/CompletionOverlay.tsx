@@ -12,6 +12,9 @@ type CompletionOverlayProps = {
   readonly options: readonly CompletionOption[]
   readonly selectedIndex: number
   readonly loading: boolean
+  readonly focused: boolean
+  readonly onFocusList: () => void
+  readonly onSelect: (index: number) => void
 }
 
 export function CompletionOverlay(props: CompletionOverlayProps) {
@@ -52,17 +55,26 @@ export function CompletionOverlay(props: CompletionOverlayProps) {
         </box>
       ) : (
         <box padding={1}>
-          <select
-            options={[...props.options]}
-            selectedIndex={props.selectedIndex}
-            height={visibleHeight}
-            showScrollIndicator
-            selectedBackgroundColor={theme.selection}
-            selectedTextColor={theme.selectionText}
-            onSelect={() => {
-              return
-            }}
-          />
+          <box
+            border
+            borderStyle="rounded"
+            borderColor={props.focused ? theme.borderStrong : theme.borderSubtle}
+            onMouseDown={props.onFocusList}
+          >
+            <select
+              options={[...props.options]}
+              selectedIndex={props.selectedIndex}
+              height={visibleHeight}
+              focused={props.focused}
+              showScrollIndicator
+              selectedBackgroundColor={theme.selection}
+              selectedTextColor={theme.selectionText}
+              onMouseDown={props.onFocusList}
+              onSelect={(index) => {
+                props.onSelect(index)
+              }}
+            />
+          </box>
         </box>
       )}
     </box>

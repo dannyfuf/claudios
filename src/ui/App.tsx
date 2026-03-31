@@ -21,11 +21,13 @@ import { Toaster, toast } from "@opentui-ui/toast/react"
 import {
   isPermissionModeName,
   listSlashCommandSuggestions,
+  parseVimCommandMode,
   PERMISSION_MODES,
   resolveComposerSubmission,
   shouldSubmitSlashSuggestion,
 } from "#commands/slash"
 import type { ParsedLocalSlashCommand, SlashCommandSuggestion } from "#commands/slash"
+import { getInteractionMode } from "#state/types"
 import {
   useAppController,
   useConversationService,
@@ -71,6 +73,8 @@ type SetModelResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: string }
 
+const ESCAPE_INTERRUPT_WINDOW_MS = 500
+
 export function App() {
   return (
     <DialogProvider>
@@ -86,7 +90,8 @@ function AppContent() {
   const theme = useThemePalette()
   const dialog = useDialog()
   const isDialogOpen = useDialogState((s) => s.isOpen)
-  const vimMode = useConversationSelector((s) => s.vimMode)
+  const vimEnabled = useConversationSelector((s) => s.vimEnabled)
+  const interactionMode = useConversationSelector(getInteractionMode)
   const currentModel = useConversationSelector((s) => s.model)
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
@@ -99,6 +104,7 @@ function AppContent() {
   const [pendingOperator, setPendingOperator] = useState<VimPendingOperator>(null)
   const inputRef = useRef<InputRenderable | null>(null)
   const messageAreaRef = useRef<ScrollBoxRenderable | null>(null)
+  const pendingEscapeInterruptRef = useRef<number | null>(null)
 
   const dialogTheme = useMemo(() => createDialogTheme(theme), [theme])
   const toasterOptions = useMemo(() => createToasterOptions(theme), [theme])
@@ -153,10 +159,16 @@ function AppContent() {
   }, [activeFileToken?.query, picker?.kind, picker?.options.length, slashPickerQuery])
 
   useEffect(() => {
-    if (vimMode !== "normal") {
+    if (interactionMode !== "normal") {
       setPendingOperator(null)
     }
-  }, [vimMode])
+  }, [interactionMode])
+
+  useEffect(() => {
+    if (sessionState.status !== "running" || isDialogOpen) {
+      pendingEscapeInterruptRef.current = null
+    }
+  }, [isDialogOpen, sessionState.status])
 
   // When a permission request arrives, dismiss any open dialogs
   useEffect(() => {
@@ -204,13 +216,11 @@ function AppContent() {
   // Actions
   // -------------------------------------------------------------------------
 
-  const applyPickerSelection = useCallback(() => {
-    if (!picker) return
-    const option = picker.options[selectedIndex]
-    if (!option) return
-    service.setPromptText(option.value)
-    service.setVimMode("insert")
-  }, [picker, selectedIndex, service])
+  const focusCompletionList = useCallback(() => {
+    if (vimEnabled) {
+      service.setVimMode("normal")
+    }
+  }, [service, vimEnabled])
 
   const applyModelChange = useCallback(
     async (nextModel: string): Promise<SetModelResult> => {
@@ -239,7 +249,17 @@ function AppContent() {
     })
   }, [dialog, keymap])
 
+  const interruptRunningRequest = useCallback(() => {
+    void service.interrupt().catch((error) => {
+      toast.error(`Failed to cancel request: ${getErrorMessage(error)}`)
+    })
+  }, [service])
+
   const openSessionPicker = useCallback(async () => {
+    if (!vimEnabled) {
+      service.setVimMode("insert")
+    }
+
     dialog.closeAll()
 
     const selectedSessionId = await dialog.prompt<string>({
@@ -262,9 +282,13 @@ function AppContent() {
         toast.error(`Failed to resume session: ${getErrorMessage(error)}`)
       }
     }
-  }, [dialog, service])
+  }, [dialog, service, vimEnabled])
 
   const openModelPicker = useCallback(async () => {
+    if (!vimEnabled) {
+      service.setVimMode("insert")
+    }
+
     dialog.closeAll()
 
     const selectedModel = await dialog.prompt<string>({
@@ -286,7 +310,7 @@ function AppContent() {
         toast.error(`Failed to set model: ${result.error}`)
       }
     }
-  }, [applyModelChange, currentModel, dialog])
+  }, [applyModelChange, currentModel, dialog, service, vimEnabled])
 
   const runLocalSlashCommand = useCallback(
     async (command: ParsedLocalSlashCommand) => {
@@ -373,13 +397,61 @@ function AppContent() {
           return
         }
 
+        case "thinking": {
+          const mode = command.args.join(" ").trim().toLowerCase()
+
+          if (!mode || mode === "toggle") {
+            const showThinking = service.toggleThinkingVisibility()
+            toast.info(`Thinking: ${showThinking ? "on" : "off"}`)
+            return
+          }
+
+          if (mode !== "on" && mode !== "off") {
+            toast.error("Invalid thinking mode: expected on, off, or toggle")
+            return
+          }
+
+          const showThinking = mode === "on"
+          service.setShowThinking(showThinking)
+          toast.info(`Thinking: ${showThinking ? "on" : "off"}`)
+          return
+        }
+
+        case "vim": {
+          const result = parseVimCommandMode(command.args)
+          if (!result.ok) {
+            toast.error(result.error)
+            return
+          }
+
+          const nextEnabled =
+            result.mode === "toggle" ? !vimEnabled : result.mode === "on"
+
+          if (nextEnabled === vimEnabled) {
+            toast.info(`Vim: already ${nextEnabled ? "on" : "off"}`)
+            return
+          }
+
+          service.setVimEnabled(nextEnabled)
+          toast.info(`Vim: ${nextEnabled ? "on" : "off"}`)
+          return
+        }
+
         case "keys": {
           openKeymapHelp()
           return
         }
       }
     },
-    [appController, applyModelChange, availableModels, openKeymapHelp, openSessionPicker, service],
+    [
+      appController,
+      applyModelChange,
+      availableModels,
+      openKeymapHelp,
+      openSessionPicker,
+      service,
+      vimEnabled,
+    ],
   )
 
   const submitComposer = useCallback(() => {
@@ -402,6 +474,33 @@ function AppContent() {
 
     void service.submitCurrentPrompt()
   }, [canSubmitPrompt, promptText, runLocalSlashCommand, service])
+
+  const selectPickerOption = useCallback(
+    (index: number) => {
+      if (!picker) return
+
+      if (picker.kind === "slash") {
+        const option = picker.options[index]
+        if (!option) return
+
+        if (shouldSubmitSlashSuggestion(promptText, option)) {
+          submitComposer()
+          return
+        }
+
+        service.setPromptText(option.value)
+      } else {
+        const option = picker.options[index]
+        if (!option) return
+        service.setPromptText(option.value)
+      }
+
+      if (vimEnabled) {
+        service.setVimMode("insert")
+      }
+    },
+    [picker, promptText, service, submitComposer, vimEnabled],
+  )
 
   const syncPromptTextFromInput = useCallback(() => {
     const input = inputRef.current
@@ -515,8 +614,71 @@ function AppContent() {
       return
     }
 
+    if (sessionState.status === "running") {
+      if (isDoubleEscapeKey(key)) {
+        pendingEscapeInterruptRef.current = null
+        interruptRunningRequest()
+        return
+      }
+
+      if (isEscapeKey(key) && !key.repeated) {
+        const now = Date.now()
+        const previousEscapeAt = pendingEscapeInterruptRef.current
+        pendingEscapeInterruptRef.current = now
+
+        if (
+          previousEscapeAt !== null &&
+          now - previousEscapeAt <= ESCAPE_INTERRUPT_WINDOW_MS
+        ) {
+          pendingEscapeInterruptRef.current = null
+          interruptRunningRequest()
+          return
+        }
+      } else if (!isEscapeKey(key)) {
+        pendingEscapeInterruptRef.current = null
+      }
+    }
+
     if (sessionState.status !== "awaiting_permission") {
-      if (vimMode === "normal") {
+      if (interactionMode !== "normal" && shouldSyncPromptTextFromKey(key)) {
+        queueMicrotask(syncPromptTextFromInput)
+      }
+
+      if (picker) {
+        const pickerAction = resolvePickerKeyboardAction(key, interactionMode)
+        switch (pickerAction.kind) {
+          case "move":
+            setSelectedIndex((current) => {
+              const next = current + pickerAction.delta
+              return Math.max(0, Math.min(next, picker.options.length - 1))
+            })
+            return
+          case "select":
+            if (interactionMode !== "normal") {
+              return
+            }
+
+            if (!picker.options[selectedIndex]) {
+              return
+            }
+
+            selectPickerOption(selectedIndex)
+            return
+          case "close":
+            if (interactionMode === "normal" && vimEnabled) {
+              service.setVimMode("insert")
+              return
+            }
+            break
+          case "setMode":
+            service.setVimMode(pickerAction.mode)
+            return
+          case "none":
+            break
+        }
+      }
+
+      if (interactionMode === "normal" && !picker) {
         if (key.name === "escape") {
           setPendingOperator(null)
           return
@@ -539,59 +701,17 @@ function AppContent() {
           return
         }
       }
-
-      if (vimMode === "insert" && shouldSyncPromptTextFromKey(key)) {
-        queueMicrotask(syncPromptTextFromInput)
-      }
-
-      if (picker) {
-        const pickerAction = resolvePickerKeyboardAction(key, vimMode)
-        switch (pickerAction.kind) {
-          case "move":
-            setSelectedIndex((current) => {
-              const next = current + pickerAction.delta
-              return Math.max(0, Math.min(next, picker.options.length - 1))
-            })
-            return
-          case "select": {
-            if (picker.kind === "slash") {
-              const selectedOption = picker.options[selectedIndex]
-              if (selectedOption && shouldSubmitSlashSuggestion(promptText, selectedOption)) {
-                submitComposer()
-                return
-              }
-            }
-
-            if (!picker.options[selectedIndex]) {
-              return
-            }
-
-            applyPickerSelection()
-            return
-          }
-          case "close":
-            // Clear prompt to dismiss the picker
-            service.setPromptText("")
-            service.setVimMode("normal")
-            return
-          case "setMode":
-            service.setVimMode(pickerAction.mode)
-            return
-          case "none":
-            break
-        }
-      }
     }
 
     const keyStr = getKeyBindingString(key)
-    if (key.repeated && keyStr === "?" && vimMode === "normal") {
+    if (key.repeated && keyStr === "?" && interactionMode === "normal") {
       return
     }
 
     const context =
       sessionState.status === "awaiting_permission" ? "modal" as const : "global" as const
 
-    const action = keymap.resolve(keyStr, context, vimMode)
+    const action = keymap.resolve(keyStr, context, interactionMode)
     if (action) {
       handleAction(action)
     }
@@ -609,9 +729,12 @@ function AppContent() {
           hasModalFocus={isDialogOpen}
           inputRef={inputRef}
           onSubmit={() => {
-            if (!picker) {
-              submitComposer()
+            if (picker) {
+              selectPickerOption(selectedIndex)
+              return
             }
+
+            submitComposer()
           }}
         />
         <StatusBar />
@@ -621,6 +744,12 @@ function AppContent() {
             options={picker.options}
             selectedIndex={selectedIndex}
             loading={picker.kind === "file" ? picker.loading : false}
+            focused={interactionMode === "normal"}
+            onFocusList={focusCompletionList}
+            onSelect={(index: number) => {
+              setSelectedIndex(index)
+              selectPickerOption(index)
+            }}
           />
         ) : null}
       </box>
@@ -707,6 +836,14 @@ function shouldSyncPromptTextFromKey(
   }
 
   return isPrintableKeySequence(key.sequence) || key.name === "backspace" || key.name === "delete"
+}
+
+function isEscapeKey(key: Pick<KeyEvent, "name">): boolean {
+  return key.name === "escape"
+}
+
+function isDoubleEscapeKey(key: Pick<KeyEvent, "name" | "meta">): boolean {
+  return isEscapeKey(key) && key.meta
 }
 
 function getErrorMessage(error: unknown): string {

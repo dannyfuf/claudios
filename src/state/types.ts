@@ -23,6 +23,8 @@ import { DEFAULT_THEME_NAME, type ThemeName } from "#ui/theme"
 
 export type VimMode = "insert" | "normal"
 
+export type InteractionMode = "plain" | VimMode
+
 // ---------------------------------------------------------------------------
 // Display message types (what the UI renders)
 // ---------------------------------------------------------------------------
@@ -109,8 +111,10 @@ export type ConversationState = {
   readonly permissionMode: string
   readonly themeName: ThemeName
   readonly diffMode: "unified" | "split"
+  readonly showThinking: boolean
   readonly totalCostUsd: number
   readonly totalTokens: number
+  readonly vimEnabled: boolean
   readonly vimMode: VimMode
   readonly availableModels: readonly ModelInfo[]
   readonly availableCommands: readonly SlashCommand[]
@@ -132,12 +136,20 @@ export const initialConversationState: ConversationState = {
   permissionMode: "default",
   themeName: DEFAULT_THEME_NAME,
   diffMode: "unified",
+  showThinking: true,
   totalCostUsd: 0,
   totalTokens: 0,
+  vimEnabled: false,
   vimMode: "insert",
   availableModels: [],
   availableCommands: [],
   account: null,
+}
+
+export function getInteractionMode(
+  state: Pick<ConversationState, "vimEnabled" | "vimMode">,
+): InteractionMode {
+  return state.vimEnabled ? state.vimMode : "plain"
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +184,9 @@ export type ConversationAction =
   | { readonly type: "set_permission_mode"; readonly mode: string }
   | { readonly type: "set_theme"; readonly themeName: ThemeName }
   | { readonly type: "set_diff_mode"; readonly diffMode: "unified" | "split" }
+  | { readonly type: "set_show_thinking"; readonly showThinking: boolean }
   | { readonly type: "update_cost"; readonly costUsd: number; readonly tokens: number }
+  | { readonly type: "set_vim_enabled"; readonly enabled: boolean }
   | { readonly type: "set_vim_mode"; readonly mode: VimMode }
   | { readonly type: "set_available_models"; readonly models: readonly ModelInfo[] }
   | { readonly type: "set_available_commands"; readonly commands: readonly SlashCommand[] }
@@ -283,12 +297,18 @@ export function conversationReducer(
     case "set_diff_mode":
       return { ...state, diffMode: action.diffMode }
 
+    case "set_show_thinking":
+      return { ...state, showThinking: action.showThinking }
+
     case "update_cost":
       return {
         ...state,
         totalCostUsd: action.costUsd,
         totalTokens: action.tokens,
       }
+
+    case "set_vim_enabled":
+      return { ...state, vimEnabled: action.enabled }
 
     case "set_vim_mode":
       return { ...state, vimMode: action.mode }

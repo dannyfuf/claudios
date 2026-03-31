@@ -2,6 +2,13 @@ import { describe, expect, it } from "bun:test"
 import { resolvePickerKeyboardAction } from "#ui/picker-keyboard"
 
 describe("resolvePickerKeyboardAction", () => {
+  it("treats plain mode as input-focused and closes on escape", () => {
+    expect(resolvePickerKeyboardAction({ name: "j", sequence: "j" }, "plain")).toEqual({ kind: "none" })
+    expect(resolvePickerKeyboardAction({ name: "escape", sequence: "\u001b" }, "plain")).toEqual({
+      kind: "close",
+    })
+  })
+
   it("keeps insert mode focused on filtering until escape is pressed", () => {
     expect(resolvePickerKeyboardAction({ name: "j", sequence: "j" }, "insert")).toEqual({ kind: "none" })
     expect(resolvePickerKeyboardAction({ name: "escape", sequence: "\u001b" }, "insert")).toEqual({

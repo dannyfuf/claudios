@@ -7,6 +7,7 @@ describe("Keymap", () => {
 
     expect(keymap.resolve("?", "global", "normal")).toBe("keys.help")
     expect(keymap.resolve("?", "global", "insert")).toBeNull()
+    expect(keymap.resolve("?", "global", "plain")).toBeNull()
   })
 
   it("resolves the model and session picker shortcuts in global mode", () => {
@@ -16,6 +17,16 @@ describe("Keymap", () => {
     expect(keymap.resolve("ctrl+r", "global", "insert")).toBe("session.openPicker")
     expect(keymap.resolve("ctrl+p", "global", "normal")).toBe("model.openPicker")
     expect(keymap.resolve("ctrl+r", "global", "normal")).toBe("session.openPicker")
+    expect(keymap.resolve("ctrl+p", "global", "plain")).toBe("model.openPicker")
+    expect(keymap.resolve("ctrl+r", "global", "plain")).toBe("session.openPicker")
+  })
+
+  it("submits prompts in plain mode without enabling vim bindings", () => {
+    const keymap = new Keymap()
+
+    expect(keymap.resolve("enter", "global", "plain")).toBe("prompt.submit")
+    expect(keymap.resolve("escape", "global", "plain")).toBeNull()
+    expect(keymap.resolve("i", "global", "plain")).toBeNull()
   })
 
   it("applies action-based key overrides to picker shortcuts", () => {

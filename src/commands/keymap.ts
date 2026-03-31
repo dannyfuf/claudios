@@ -10,11 +10,11 @@
 // ---------------------------------------------------------------------------
 
 export type KeyContext = "global" | "modal" | "select"
-export type VimModeContext = "insert" | "normal"
+export type InteractionModeContext = "plain" | "insert" | "normal"
 
 export type KeymapEntry = {
   readonly key: string
-  readonly mode?: VimModeContext
+  readonly mode?: InteractionModeContext
   readonly context: KeyContext
   readonly action: string
   readonly description: string
@@ -50,6 +50,7 @@ const defaultBindings: readonly KeymapEntry[] = [
   { key: "?", context: "global", mode: "normal", action: "keys.help", description: "Show keybinding help" },
 
   // Submit
+  { key: "enter", context: "global", mode: "plain", action: "prompt.submit", description: "Submit prompt" },
   { key: "enter", context: "global", mode: "insert", action: "prompt.submit", description: "Submit prompt" },
 
   // Permission modal
@@ -88,7 +89,7 @@ export class Keymap {
   resolve(
     key: string,
     context: KeyContext,
-    vimMode: VimModeContext,
+    interactionMode: InteractionModeContext,
   ): string | null {
     // Modal context takes priority
     if (context === "modal") {
@@ -100,7 +101,7 @@ export class Keymap {
 
     // Check mode-specific bindings first
     const modeEntry = this.entries.find(
-      (e) => e.key === key && e.context === context && e.mode === vimMode,
+      (e) => e.key === key && e.context === context && e.mode === interactionMode,
     )
     if (modeEntry) return modeEntry.action
 

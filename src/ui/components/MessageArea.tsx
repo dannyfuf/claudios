@@ -385,7 +385,7 @@ function UserMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box width="100%" maxWidth={layout.columnWidth} flexDirection="column" alignItems="flex-end">
@@ -433,7 +433,7 @@ function AssistantMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box
@@ -496,7 +496,7 @@ function ThinkingMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box
@@ -581,7 +581,7 @@ function ToolCallMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box
@@ -689,7 +689,7 @@ function SystemMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box
@@ -734,7 +734,7 @@ function TaskMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box
@@ -816,7 +816,7 @@ function ErrorMessage({
   return (
     <box
       paddingX={layout.horizontalPadding}
-      marginBottom={layout.compact ? 1 : 2}
+      marginBottom={1}
       alignItems="center"
     >
       <box

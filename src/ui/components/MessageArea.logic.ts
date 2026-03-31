@@ -60,7 +60,7 @@ export function getMessageLayout(width: number): MessageLayout {
     horizontalPadding,
     columnWidth,
     userBubbleWidth,
-    sectionPaddingY: compact ? 0 : 1,
+    sectionPaddingY: 0,
     metaGapBottom: compact ? 0 : 1,
   }
 }

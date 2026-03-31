@@ -21,6 +21,7 @@ import type {
   SDKTaskProgressMessage,
   SDKTaskNotificationMessage,
   SpawnedTask,
+  McpServerStatus,
 } from "#sdk/types"
 import { MessageUUID, SessionId, sessionSummaryFromSDK } from "#sdk/types"
 import type { SessionSummary } from "#sdk/types"
@@ -39,6 +40,7 @@ import {
   initialConversationState,
 } from "#state/types"
 import type { AppConfig } from "#config/schema"
+import { saveConfig } from "#config/schema"
 import {
   createQuery,
   getQueryMetadata,
@@ -124,6 +126,7 @@ export class ConversationService {
         themeName: config.theme,
         diffMode: config.diffMode,
         showThinking: config.showThinking,
+        vimEnabled: config.vimEnabled,
       }
   }
 
@@ -182,6 +185,7 @@ export class ConversationService {
   setVimEnabled(enabled: boolean): void {
     this.dispatch({ type: "set_vim_enabled", enabled })
     this.dispatch({ type: "set_vim_mode", mode: "insert" })
+    saveConfig({ ...this.config, vimEnabled: enabled }).catch(() => {})
   }
 
   setVimMode(mode: ConversationState["vimMode"]): void {
@@ -1030,6 +1034,25 @@ export class ConversationService {
       await this.activeQuery.setModel(model)
     }
     this.dispatch({ type: "set_model", model })
+  }
+
+  async getMcpServerStatus(): Promise<McpServerStatus[]> {
+    return this.getActiveQueryOrThrow().mcpServerStatus()
+  }
+
+  async reconnectMcpServer(serverName: string): Promise<void> {
+    return this.getActiveQueryOrThrow().reconnectMcpServer(serverName)
+  }
+
+  async toggleMcpServer(serverName: string, enabled: boolean): Promise<void> {
+    return this.getActiveQueryOrThrow().toggleMcpServer(serverName, enabled)
+  }
+
+  private getActiveQueryOrThrow(): Query {
+    if (!this.activeQuery) {
+      throw new Error("No active session. Start a conversation first.")
+    }
+    return this.activeQuery
   }
 
   private getQueryOptions(canUseTool: CanUseTool): Partial<Options> {

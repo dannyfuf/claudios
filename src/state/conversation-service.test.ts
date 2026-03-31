@@ -13,6 +13,7 @@ const TEST_CONFIG: AppConfig = {
   diffMode: "unified",
   showThinking: true,
   claudePath: "claude",
+  vimEnabled: false,
 }
 
 describe("ConversationService", () => {

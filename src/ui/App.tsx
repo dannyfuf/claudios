@@ -18,6 +18,7 @@ import type { InputRenderable, KeyEvent, ScrollBoxRenderable } from "@opentui/co
 import { DialogProvider, useDialog, useDialogState } from "@opentui-ui/dialog/react"
 import type { ConfirmContext, PromptContext, AlertContext } from "@opentui-ui/dialog/react"
 import { Toaster, toast } from "@opentui-ui/toast/react"
+import { normalizeKeyBinding } from "#commands/keymap"
 import {
   isPermissionModeName,
   listSlashCommandSuggestions,
@@ -44,6 +45,7 @@ import { PermissionDialogContent } from "#ui/components/PermissionModal"
 import { ModelPickerDialogContent } from "#ui/components/ModelPickerOverlay"
 import { SessionPickerDialogContent } from "#ui/components/SessionPickerOverlay"
 import { KeymapHelpContent } from "#ui/components/KeymapHelpOverlay"
+import { McpOverlayContent } from "#ui/components/McpOverlay"
 import { getSlashPickerQuery } from "#ui/slash-picker"
 import { listWorkspaceFiles } from "#ui/workspace-files"
 import { handleNormalModeKey, type VimPendingOperator } from "#ui/vim"
@@ -441,12 +443,42 @@ function AppContent() {
           openKeymapHelp()
           return
         }
+
+        case "mcp": {
+          let servers
+          try {
+            servers = await service.getMcpServerStatus()
+          } catch (err) {
+            toast.error(getErrorMessage(err))
+            return
+          }
+
+          dialog.closeAll()
+          void dialog.alert({
+            content: ({ dismiss, dialogId }: AlertContext) => (
+              <McpOverlayContent
+                servers={servers}
+                onReconnect={async (name) => {
+                  await service.reconnectMcpServer(name)
+                }}
+                onToggle={async (name, enabled) => {
+                  await service.toggleMcpServer(name, enabled)
+                }}
+                dismiss={dismiss}
+                dialogId={dialogId}
+              />
+            ),
+            size: "large",
+          })
+          return
+        }
       }
     },
     [
       appController,
       applyModelChange,
       availableModels,
+      dialog,
       openKeymapHelp,
       openSessionPicker,
       service,
@@ -639,9 +671,28 @@ function AppContent() {
       }
     }
 
+    const keyStr = normalizeKeyBinding(getKeyBindingString(key))
+    if (key.repeated && (keyStr === "?" || keyStr === "ctrl+/") && (interactionMode === "normal" || interactionMode === "plain")) {
+      return
+    }
+
+    const context =
+      sessionState.status === "awaiting_permission" ? "modal" as const : "global" as const
+
+    const action = keymap.resolve(keyStr, context, interactionMode)
+
     if (sessionState.status !== "awaiting_permission") {
-      if (interactionMode !== "normal" && shouldSyncPromptTextFromKey(key)) {
+      const keyConsumedByAction = action !== null && shouldSyncPromptTextFromKey(key)
+      if (interactionMode !== "normal" && shouldSyncPromptTextFromKey(key) && !keyConsumedByAction) {
         queueMicrotask(syncPromptTextFromInput)
+      }
+
+      if (keyConsumedByAction && interactionMode !== "normal") {
+        queueMicrotask(() => {
+          if (inputRef.current) {
+            inputRef.current.value = promptText
+          }
+        })
       }
 
       if (picker) {
@@ -703,15 +754,6 @@ function AppContent() {
       }
     }
 
-    const keyStr = getKeyBindingString(key)
-    if (key.repeated && keyStr === "?" && interactionMode === "normal") {
-      return
-    }
-
-    const context =
-      sessionState.status === "awaiting_permission" ? "modal" as const : "global" as const
-
-    const action = keymap.resolve(keyStr, context, interactionMode)
     if (action) {
       handleAction(action)
     }

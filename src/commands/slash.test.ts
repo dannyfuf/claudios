@@ -67,6 +67,50 @@ describe("slash commands", () => {
     ])
   })
 
+  it("includes hint field on sdk suggestions", () => {
+    const suggestions = listSlashCommandSuggestions("/pl", SDK_COMMANDS)
+    const planSuggestion = suggestions.find((s) => s.name === "/plan")
+
+    expect(planSuggestion).toBeDefined()
+    expect(planSuggestion?.source).toBe("sdk")
+    if (planSuggestion?.source === "sdk") {
+      expect(planSuggestion.hint).toBe("<task>")
+    }
+  })
+
+  it("sets hint to null when argumentHint is empty", () => {
+    const suggestions = listSlashCommandSuggestions("/cl", SDK_COMMANDS)
+    const clearHistorySuggestion = suggestions.find((s) => s.name === "/clear-history")
+
+    expect(clearHistorySuggestion?.source).toBe("sdk")
+    if (clearHistorySuggestion?.source === "sdk") {
+      expect(clearHistorySuggestion.hint).toBeNull()
+    }
+  })
+
+  it("appends trailing space to value only when hint is present", () => {
+    const suggestions = listSlashCommandSuggestions("/", SDK_COMMANDS)
+    const planSuggestion = suggestions.find((s) => s.name === "/plan")
+    const clearHistorySuggestion = suggestions.find((s) => s.name === "/clear-history")
+
+    expect(planSuggestion?.value).toBe("/plan ")
+    expect(clearHistorySuggestion?.value).toBe("/clear-history")
+  })
+
+  it("includes /mcp as a local command in the picker", () => {
+    const suggestions = listSlashCommandSuggestions("/mc", SDK_COMMANDS)
+    const mcpSuggestion = suggestions.find((s) => s.name === "/mcp")
+    expect(mcpSuggestion).toBeDefined()
+    expect(mcpSuggestion?.source).toBe("local")
+  })
+
+  it("routes /mcp as a local command", () => {
+    expect(resolveComposerSubmission("/mcp")).toEqual({
+      kind: "local_command",
+      command: { name: "mcp", args: [] },
+    })
+  })
+
   it("routes local slash commands locally and leaves unknown slash commands for the sdk", () => {
     expect(resolveComposerSubmission("/clear")).toEqual({
       kind: "local_command",
@@ -100,7 +144,7 @@ describe("slash commands", () => {
     // normalizeSlashQuery strips the leading "/" — the App layer trims leading
     // whitespace before passing the token. Verify the underlying filter still
     // works correctly for bare tokens.
-    expect(filterLocalSlashCommands("").length).toBe(11) // all local commands
+    expect(filterLocalSlashCommands("").length).toBe(12) // all local commands
     expect(filterLocalSlashCommands("mo").map((c) => c.name)).toEqual(["model"])
     expect(filterLocalSlashCommands("ses").map((c) => c.name)).toEqual(["sessions"])
   })

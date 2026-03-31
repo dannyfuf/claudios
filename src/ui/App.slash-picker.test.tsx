@@ -45,6 +45,11 @@ const TEST_SDK_COMMANDS: readonly SlashCommand[] = [
     description: "Review a file",
     argumentHint: "<path>",
   },
+  {
+    name: "cost",
+    description: "Show total cost and duration",
+    argumentHint: "",
+  },
 ] as const
 
 const TEST_APP_CONTROLLER: AppController = {
@@ -71,9 +76,9 @@ describe("App slash picker", () => {
 
     let frame = await typeAndRender(renderedApp.testSetup, "/")
     expect(frame).toContain("slash commands")
-    expect(frame).toContain("/q")
     expect(frame).toContain("/clear")
-    expect(frame).toContain("/plan")
+    expect(frame).toContain("/cost")
+    expect(frame).toContain("/mcp")
 
     frame = await typeAndRender(renderedApp.testSetup, "p")
     expect(renderedApp.service.getState().promptText).toBe("/p")
@@ -119,7 +124,36 @@ describe("App slash picker", () => {
     expect(renderedApp.service.getState().vimMode).toBe("insert")
     expect(renderedApp.service.getState().promptText).toBe("/")
     expect(frame).toContain("slash commands")
-    expect(frame).toContain("/q")
+    expect(frame).toContain("/clear")
+  })
+
+  it("shows /cost in picker when typing /c", async () => {
+    renderedApp = await renderTestApp()
+
+    const frame = await typeAndRender(renderedApp.testSetup, "/c")
+    expect(frame).toContain("slash commands")
+    expect(frame).toContain("/cost")
+  })
+
+  it("shows argument hint in picker description for sdk commands with hints", async () => {
+    renderedApp = await renderTestApp()
+
+    const frame = await typeAndRender(renderedApp.testSetup, "/pl")
+    expect(frame).toContain("/plan")
+    expect(frame).toContain("<task>")
+  })
+
+  it("opens help from plain mode on ctrl+slash", async () => {
+    renderedApp = await renderTestApp({ promptText: "hello", kittyKeyboard: true })
+
+    const frame = await pressModifiedKeyAndRender(renderedApp.testSetup, "/", {
+      ctrl: true,
+      shift: true,
+    })
+
+    expect(renderedApp.service.getState().promptText).toBe("hello")
+    expect(frame).toContain("keymaps")
+    expect(frame).toContain("bindings")
   })
 
   it("toggles vim on and off through the local slash command", async () => {
@@ -195,6 +229,7 @@ async function renderTestApp(options?: {
   readonly vimMode?: VimMode
   readonly sessionState?: SessionState
   readonly onInterrupt?: () => Promise<void> | void
+  readonly kittyKeyboard?: boolean
 }) {
   const service = new ConversationService(DEFAULT_CONFIG, createReadyConversationState(options))
   if (options?.onInterrupt) {
@@ -213,7 +248,11 @@ async function renderTestApp(options?: {
         </ConversationServiceProvider>
       </KeymapProvider>
     </ConfigProvider>,
-    { width: 100, height: 30 },
+    {
+      width: 100,
+      height: 30,
+      ...(options?.kittyKeyboard === undefined ? {} : { kittyKeyboard: options.kittyKeyboard }),
+    },
   )
 
   await renderFrame(testSetup)
@@ -259,6 +298,25 @@ async function pressKeyAndRender(
       testSetup.mockInput.pressKey(key)
       await Bun.sleep(0)
     }
+  })
+
+  return renderFrame(testSetup)
+}
+
+async function pressModifiedKeyAndRender(
+  testSetup: Awaited<ReturnType<typeof testRender>>,
+  key: string,
+  modifiers: {
+    readonly shift?: boolean
+    readonly ctrl?: boolean
+    readonly meta?: boolean
+    readonly super?: boolean
+    readonly hyper?: boolean
+  },
+): Promise<string> {
+  await act(async () => {
+    testSetup.mockInput.pressKey(key, modifiers)
+    await Bun.sleep(0)
   })
 
   return renderFrame(testSetup)

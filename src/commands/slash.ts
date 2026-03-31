@@ -107,9 +107,17 @@ export const LOCAL_SLASH_COMMANDS = [
   },
   {
     name: "keys",
-    aliases: [],
+    aliases: ["help"],
     description: "Show keybinding reference",
     insertText: "/keys",
+    acceptsArguments: false,
+    submitOnExactMatch: true,
+  },
+  {
+    name: "mcp",
+    aliases: [],
+    description: "List and manage MCP servers",
+    insertText: "/mcp",
     acceptsArguments: false,
     submitOnExactMatch: true,
   },
@@ -135,6 +143,7 @@ export type SlashCommandSuggestion =
   | {
       readonly name: string
       readonly description: string
+      readonly hint: string | null
       readonly value: string
       readonly source: "sdk"
       readonly submitOnExactMatch: false
@@ -172,6 +181,9 @@ export function filterLocalSlashCommands(query: string): readonly LocalSlashComm
   }))
 }
 
+// Commands known to the CLI but not always returned in SDK metadata
+const STATIC_NATIVE_COMMANDS: readonly SDKSlashCommand[] = []
+
 export function listSlashCommandSuggestions(
   query: string,
   sdkCommands: readonly SDKSlashCommand[],
@@ -186,15 +198,23 @@ export function listSlashCommandSuggestions(
     submitOnExactMatch: command.submitOnExactMatch,
   }))
 
-  const sdkSuggestions = rankPrefixMatches(sdkCommands, normalizedQuery, (command) => ({
+  const sdkNames = new Set(sdkCommands.map((c) => c.name))
+  const supplemental = STATIC_NATIVE_COMMANDS.filter((c) => !sdkNames.has(c.name))
+  const allSdkCommands = [...sdkCommands, ...supplemental]
+
+  const sdkSuggestions = rankPrefixMatches(allSdkCommands, normalizedQuery, (command) => ({
     prefix: [command.name],
-  })).map((command) => ({
-    name: `/${command.name}`,
-    description: `Claude command: ${command.description}`,
-    value: `/${command.name} `,
-    source: "sdk" as const,
-    submitOnExactMatch: false as const,
-  }))
+  })).map((command) => {
+    const hint = command.argumentHint || null
+    return {
+      name: `/${command.name}`,
+      description: `Claude command: ${command.description}${hint ? `  ${hint}` : ""}`,
+      hint,
+      value: `/${command.name}${hint ? " " : ""}`,
+      source: "sdk" as const,
+      submitOnExactMatch: false as const,
+    }
+  })
 
   return [...localSuggestions, ...sdkSuggestions].sort((left, right) =>
     left.name.localeCompare(right.name),

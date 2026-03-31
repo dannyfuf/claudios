@@ -28,6 +28,7 @@ import type {
   ModelInfo,
   AccountInfo,
   PermissionMode,
+  McpServerStatus,
 } from "@anthropic-ai/claude-agent-sdk"
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ export type {
   ModelInfo,
   AccountInfo,
   PermissionMode,
+  McpServerStatus,
 }
 
 // ---------------------------------------------------------------------------

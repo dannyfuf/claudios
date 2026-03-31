@@ -100,6 +100,18 @@ describe("tool previews", () => {
     expect(normalizeToolLabel("Write complete")).toBe("Write")
   })
 
+  it("humanizes MCP tool names", () => {
+    expect(normalizeToolLabel("mcp__morph__edit_file")).toBe("morph: edit file")
+    expect(normalizeToolLabel("mcp__morph__codebase_search")).toBe("morph: codebase search")
+    expect(normalizeToolLabel("mcp__github__create_issue")).toBe("github: create issue")
+  })
+
+  it("leaves non-MCP tool names unchanged", () => {
+    expect(normalizeToolLabel("Bash")).toBe("Bash")
+    expect(normalizeToolLabel("Read")).toBe("Read")
+    expect(normalizeToolLabel("mcp_not_double_underscore")).toBe("mcp_not_double_underscore")
+  })
+
   it("uses the most relevant string input field and truncates it", () => {
     const detail = getToolBriefDetail({
       input: {

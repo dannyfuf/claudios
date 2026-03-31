@@ -121,7 +121,17 @@ export function mergeConsecutiveThinkingMessages(
 }
 
 export function normalizeToolLabel(value: string): string {
-  return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim()
+  const withoutComplete = value.replace(/\s+(?:complete|completed)\s*$/i, "").trim()
+
+  // Humanize MCP tool names: mcp__morph__edit_file -> morph: edit file
+  const mcpMatch = /^mcp__([^_][^_]*)__(.+)$/.exec(withoutComplete)
+  if (mcpMatch) {
+    const server = mcpMatch[1]!
+    const tool = mcpMatch[2]!.replace(/_/g, " ")
+    return `${server}: ${tool}`
+  }
+
+  return withoutComplete
 }
 
 export function getToolStatusPresentation(status: ToolCallStatus): ToolStatusPresentation {

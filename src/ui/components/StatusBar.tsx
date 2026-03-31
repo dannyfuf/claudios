@@ -8,15 +8,21 @@ import { useTerminalDimensions } from "@opentui/react"
 import type { SpinnerOptions } from "opentui-spinner"
 import { getInteractionMode, type SessionState, type StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
+import { formatTodoSummaryLine, getTodoProgress } from "#ui/components/MessageArea.logic"
 import { AppBadge } from "#ui/components/StyledBadge"
 import { useConversationSelector, useThemePalette } from "#ui/hooks"
 
-export function StatusBar() {
+type StatusBarProps = {
+  readonly onTodosClick?: () => void
+}
+
+export function StatusBar({ onTodosClick }: StatusBarProps) {
   const theme = useThemePalette()
   const { width } = useTerminalDimensions()
   const interactionMode = useConversationSelector(getInteractionMode)
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
+  const todoTracker = useConversationSelector((s) => s.todoTracker)
   const isCompact = width < 96
   const modeLabel =
     interactionMode === "plain"
@@ -32,6 +38,14 @@ export function StatusBar() {
 
   const sessionBadge = getSessionBadge(sessionState, isCompact, theme)
   const startupBadge = getStartupBadge(startup, isCompact, theme)
+
+  const todoItems = todoTracker?.items ?? []
+  const allDone =
+    todoItems.length > 0 && getTodoProgress(todoItems).completedCount === todoItems.length
+  const todoSummary =
+    todoItems.length > 0
+      ? formatTodoSummaryLine(todoItems, isCompact ? 18 : 36)
+      : null
 
   const helpKey = interactionMode === "plain" ? "Ctrl+/" : "?"
   const hints = isCompact
@@ -55,6 +69,25 @@ export function StatusBar() {
         />
         {startupBadge ? <StatusBadge badge={startupBadge} /> : null}
         {sessionBadge ? <StatusBadge badge={sessionBadge} /> : null}
+        {todoSummary ? (
+          <box
+            flexDirection="row"
+            gap={1}
+            paddingX={1}
+            minWidth={0}
+            {...(onTodosClick ? { onMouseDown: onTodosClick } : {})}
+          >
+            <text>
+              <span fg={allDone ? theme.mutedText : theme.warning}>◦ </span>
+              <span fg={allDone ? theme.mutedText : theme.warning}>{todoSummary}</span>
+            </text>
+            {!allDone ? (
+              <text>
+                <span fg={theme.mutedText}>Ctrl+T</span>
+              </text>
+            ) : null}
+          </box>
+        ) : null}
       </box>
       <box flexDirection="row" gap={1} minWidth={0}>
         <text>

@@ -43,6 +43,7 @@
 - **Chronological activity timeline** — see thinking, tool calls, and spawned sub-tasks in execution order
 - **Token & cost tracking** — live usage stats in the header
 - **External editor support** — open your `$EDITOR` to compose long prompts
+- **Task list tracker** — live collapsed summary of Claude's current todos in the status bar; expandable overlay shows all tasks with their status
 - **Configurable keybindings** — remap any action via `config.json`
 
 ---
@@ -235,6 +236,7 @@ claudios starts in **plain** mode, so you can type immediately without entering 
 | `Ctrl+P` | Open model picker |
 | `Ctrl+E` | Open `$EDITOR` to compose prompt |
 | `Ctrl+L` | Clear message area |
+| `Ctrl+T` | Toggle task list overlay |
 | `Ctrl+D` | Scroll half page down |
 | `Ctrl+U` | Scroll half page up |
 | `Page Down` | Scroll page down |

@@ -17,10 +17,6 @@ export function StatusBar() {
   const interactionMode = useConversationSelector(getInteractionMode)
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
-  const permissionMode = useConversationSelector((s) => s.permissionMode)
-  const diffMode = useConversationSelector((s) => s.diffMode)
-  const showThinking = useConversationSelector((s) => s.showThinking)
-
   const isCompact = width < 96
   const modeLabel =
     interactionMode === "plain"
@@ -37,23 +33,10 @@ export function StatusBar() {
   const sessionBadge = getSessionBadge(sessionState, isCompact, theme)
   const startupBadge = getStartupBadge(startup, isCompact, theme)
 
-  const permissionLabel = isCompact ? permissionMode : `perm ${permissionMode}`
-  const diffLabel = isCompact
-    ? diffMode === "split"
-      ? "split"
-      : "unified"
-    : `${diffMode} diff`
-  const thinkingLabel = isCompact
-    ? `think ${showThinking ? "on" : "off"}`
-    : `thinking ${showThinking ? "on" : "off"}`
-  const hints =
-    width < 84
-      ? "^P model  ^R sessions  ^C quit"
-      : width < 120
-        ? "Ctrl+P model  Ctrl+R sessions  Ctrl+C quit"
-        : width < 150
-          ? "Ctrl+N new  Ctrl+P model  Ctrl+R sessions  Ctrl+C quit"
-          : "Ctrl+N new  Ctrl+P model  Ctrl+R sessions  Ctrl+E editor  Ctrl+C quit"
+  const helpKey = interactionMode === "plain" ? "Ctrl+/" : "?"
+  const hints = isCompact
+    ? `${helpKey} help  Esc×2 cancel`
+    : `${helpKey} help  Esc Esc cancel`
 
   return (
     <box
@@ -74,19 +57,6 @@ export function StatusBar() {
         {sessionBadge ? <StatusBadge badge={sessionBadge} /> : null}
       </box>
       <box flexDirection="row" gap={1} minWidth={0}>
-        {width >= 92 ? (
-          <text>
-            <span fg={theme.mutedText}>{permissionLabel}</span>
-          </text>
-        ) : null}
-        <text>
-          <span fg={theme.mutedText}>{diffLabel}</span>
-        </text>
-        {width >= 110 ? (
-          <text>
-            <span fg={theme.mutedText}>{thinkingLabel}</span>
-          </text>
-        ) : null}
         <text>
           <span fg={theme.mutedText}>{hints}</span>
         </text>

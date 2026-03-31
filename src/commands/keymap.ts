@@ -38,6 +38,8 @@ const defaultBindings: readonly KeymapEntry[] = [
   { key: "ctrl+e", context: "global", action: "editor.open", description: "Open $EDITOR for prompt" },
   { key: "ctrl+l", context: "global", action: "messages.clear", description: "Clear message area" },
 
+  { key: "ctrl+t", context: "global", action: "todos.toggle", description: "Toggle task list" },
+
   // Scroll (global, work regardless of input focus)
   { key: "ctrl+d", context: "global", action: "scroll.halfPageDown", description: "Scroll half page down" },
   { key: "ctrl+u", context: "global", action: "scroll.halfPageUp", description: "Scroll half page up" },

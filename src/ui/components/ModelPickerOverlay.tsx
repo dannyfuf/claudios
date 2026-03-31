@@ -10,17 +10,18 @@
  * based on terminal dimensions (the dialog auto-sizes to content height).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTerminalDimensions } from "@opentui/react"
-import type { InputRenderable } from "@opentui/core"
 import { useDialogKeyboard } from "@opentui-ui/dialog/react"
 import type { DialogId } from "@opentui-ui/dialog/react"
 import type { ModelInfo } from "#sdk/types"
-import { getInteractionMode } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
+import { VimFocusFrame } from "#ui/components/VimFocusFrame"
 import { useConversationSelector, useConversationService, useThemePalette } from "#ui/hooks"
 import { filterByPrefixQuery } from "#ui/picker-filter"
 import { resolvePickerKeyboardAction } from "#ui/picker-keyboard"
+import { useVimInputListSurface } from "#ui/picker-surface"
+import { useInteractionMode } from "#ui/vim-mode"
 
 type ModelPickerDialogContentProps = {
   readonly initialModel: string
@@ -35,14 +36,13 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
   const service = useConversationService()
   const { width, height } = useTerminalDimensions()
   const vimEnabled = useConversationSelector((s) => s.vimEnabled)
-  const vimMode = useConversationSelector((s) => s.vimMode)
-  const interactionMode = useConversationSelector(getInteractionMode)
+  const interactionMode = useInteractionMode()
   const availableModels = useConversationSelector((s) => s.availableModels)
   const metadata = useConversationSelector((s) => s.startup.metadata)
+  const surface = useVimInputListSurface()
 
   const [filterText, setFilterText] = useState("")
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const inputRef = useRef<InputRenderable | null>(null)
 
   const isCompact = width < 96
   // Dialog auto-sizes height to content — set explicit height so the
@@ -68,8 +68,8 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
     [filteredModels, isCompact],
   )
 
-  const isListFocused = vimEnabled ? interactionMode === "normal" : vimMode === "normal"
-  const isInputFocused = !isListFocused
+  const isListFocused = surface.isListActive
+  const isInputFocused = surface.isInputActive
 
   const emptyMessage = filterText.trim()
     ? "No matching models"
@@ -86,14 +86,6 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
       resolve(model.value)
     }
   }, [filteredModels, resolve, selectedIndex])
-
-  const focusInput = useCallback(() => {
-    service.setVimMode("insert")
-  }, [service])
-
-  const focusList = useCallback(() => {
-    service.setVimMode("normal")
-  }, [service])
 
   useDialogKeyboard((key) => {
     const action = resolvePickerKeyboardAction(key, interactionMode)
@@ -139,23 +131,20 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
       </box>
 
       <box paddingBottom={1} flexShrink={0}>
-        <box
+        <VimFocusFrame
+          active={isInputFocused}
           height={3}
-          border
-          borderStyle="rounded"
-          borderColor={isInputFocused ? theme.borderStrong : theme.borderSubtle}
           backgroundColor={theme.surfaceAlt}
           paddingX={1}
-          onMouseDown={focusInput}
+          onMouseDown={surface.focusInput}
         >
           <input
-            ref={inputRef}
             value={filterText}
             onInput={setFilterText}
             onSubmit={() => {
               handleSelect()
             }}
-            onMouseDown={focusInput}
+            onMouseDown={surface.focusInput}
             focused={isInputFocused}
             placeholder="Search models or identifiers"
             backgroundColor={theme.surfaceAlt}
@@ -164,7 +153,7 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
             placeholderColor={theme.mutedText}
             flexGrow={1}
           />
-        </box>
+        </VimFocusFrame>
       </box>
 
       {metadata.status === "loading" ? (
@@ -188,14 +177,12 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
           </text>
         </box>
       ) : (
-        <box
+        <VimFocusFrame
+          active={isListFocused}
           flexGrow={1}
           minHeight={3}
           overflow="hidden"
-          border
-          borderStyle="rounded"
-          borderColor={isListFocused ? theme.borderStrong : theme.borderSubtle}
-          onMouseDown={focusList}
+          onMouseDown={surface.focusList}
         >
           <select
             options={options}
@@ -205,13 +192,13 @@ export function ModelPickerDialogContent(props: ModelPickerDialogContentProps) {
             selectedBackgroundColor={theme.selection}
             selectedTextColor={theme.selectionText}
             showScrollIndicator
-            onMouseDown={focusList}
+            onMouseDown={surface.focusList}
             onSelect={(index) => {
               setSelectedIndex(index)
               handleSelect(index)
             }}
           />
-        </box>
+        </VimFocusFrame>
       )}
 
       <box height={1} justifyContent="space-between" flexDirection="row">

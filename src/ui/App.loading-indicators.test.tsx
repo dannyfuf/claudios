@@ -194,6 +194,35 @@ describe("loading indicators", () => {
     expect(renderedView.service.getState().vimMode).toBe("insert")
   })
 
+  it("keeps plain-mode picker focus local instead of mutating global vim state", async () => {
+    renderedView = await renderModelPickerView({
+      vimEnabled: false,
+      availableModels: TEST_MODELS,
+    })
+
+    let frame = await renderFrame(renderedView.testSetup)
+    expect(frame).toContain("Filter active")
+    expect(renderedView.service.getState().vimMode).toBe("insert")
+
+    await act(async () => {
+      await renderedView?.testSetup.mockMouse.click(4, 8)
+      await Bun.sleep(0)
+    })
+
+    frame = await renderFrame(renderedView.testSetup)
+    expect(frame).toContain("Results active")
+    expect(renderedView.service.getState().vimMode).toBe("insert")
+
+    await act(async () => {
+      await renderedView?.testSetup.mockMouse.click(4, 3)
+      await Bun.sleep(0)
+    })
+
+    frame = await renderFrame(renderedView.testSetup)
+    expect(frame).toContain("Filter active")
+    expect(renderedView.service.getState().vimMode).toBe("insert")
+  })
+
   it("filters model picker results on each typed character", async () => {
     renderedView = await renderModelPickerView({
       availableModels: FILTER_TEST_MODELS,

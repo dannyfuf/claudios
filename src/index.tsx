@@ -1,5 +1,5 @@
 /**
- * Entry point for better-claude TUI.
+ * Entry point for claudios TUI.
  *
  * 1. Parse CLI args
  * 2. Load config
@@ -105,10 +105,10 @@ function parseArgs(argv: string[]): CLIArgs {
 
 function printHelp(): void {
   console.log(`
-better-claude - A power-user TUI for Claude Code
+claudios - A power-user TUI for Claude Code
 
 Usage:
-  better-claude [chat] [flags]
+  claudios [chat] [flags]
 
 Commands:
   chat                   Launch the TUI chat (default)
@@ -128,7 +128,7 @@ Flags:
 }
 
 function printVersion(): void {
-  console.log("better-claude v0.1.0")
+  console.log("claudios v0.1.0")
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ async function openExternalEditor(
   editorSetting: string,
   initialText: string,
 ): Promise<string | null> {
-  const tempDirectory = await mkdtemp(join(tmpdir(), "better-claude-"))
+  const tempDirectory = await mkdtemp(join(tmpdir(), "claudios-"))
   const filePath = join(tempDirectory, "prompt.md")
 
   try {

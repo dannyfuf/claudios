@@ -1,7 +1,7 @@
 /**
  * Configuration schema and loader.
  *
- * Config file lives at ~/.config/better-claude/config.json.
+ * Config file lives at ~/.config/claudios/config.json.
  * Missing file -> defaults. Invalid file -> warn + defaults.
  */
 
@@ -39,7 +39,7 @@ export const DEFAULT_CONFIG: AppConfig = ConfigSchema.parse({})
 // Paths
 // ---------------------------------------------------------------------------
 
-export const CONFIG_DIR = join(homedir(), ".config", "better-claude")
+export const CONFIG_DIR = join(homedir(), ".config", "claudios")
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json")
 
 // ---------------------------------------------------------------------------

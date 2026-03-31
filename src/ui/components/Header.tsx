@@ -19,7 +19,7 @@ export function Header() {
 
   const isCompact = width < 96
   const isTight = width < 84
-  const appLabel = width < 90 ? "bc" : "better-claude"
+  const appLabel = width < 90 ? "bc" : "claudios"
   const sessionLabel = sessionId ? sessionId.slice(0, isTight ? 6 : 8) : "new"
   const modelLabel = truncateEnd(model, isCompact ? 12 : 18)
   const costLabel = totalCostUsd > 0 ? `$${totalCostUsd.toFixed(4)}` : ""

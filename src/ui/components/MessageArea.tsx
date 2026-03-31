@@ -159,7 +159,7 @@ function getEmptyStateContent(
       context: "startup blocked",
       title: "Claude Code needs authentication.",
       description: startup.auth.message,
-      rows: ["Run `claude auth login`, then restart better-claude."],
+      rows: ["Run `claude auth login`, then restart claudios."],
       showSpinner: false,
     }
   }

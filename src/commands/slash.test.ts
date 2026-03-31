@@ -50,7 +50,6 @@ describe("slash commands", () => {
   it("rejects non-slash input and unknown local slash commands", () => {
     expect(parseLocalSlashCommand("hello")).toBeNull()
     expect(parseLocalSlashCommand(":q")).toBeNull()
-    expect(parseLocalSlashCommand("/plan")).toBeNull()
   })
 
   it("filters local commands by canonical names and aliases", () => {
@@ -69,12 +68,11 @@ describe("slash commands", () => {
 
   it("includes hint field on sdk suggestions", () => {
     const suggestions = listSlashCommandSuggestions("/pl", SDK_COMMANDS)
-    const planSuggestion = suggestions.find((s) => s.name === "/plan")
+    const sdkPlanSuggestion = suggestions.find((s) => s.name === "/plan" && s.source === "sdk")
 
-    expect(planSuggestion).toBeDefined()
-    expect(planSuggestion?.source).toBe("sdk")
-    if (planSuggestion?.source === "sdk") {
-      expect(planSuggestion.hint).toBe("<task>")
+    expect(sdkPlanSuggestion).toBeDefined()
+    if (sdkPlanSuggestion?.source === "sdk") {
+      expect(sdkPlanSuggestion.hint).toBe("<task>")
     }
   })
 
@@ -90,10 +88,10 @@ describe("slash commands", () => {
 
   it("appends trailing space to value only when hint is present", () => {
     const suggestions = listSlashCommandSuggestions("/", SDK_COMMANDS)
-    const planSuggestion = suggestions.find((s) => s.name === "/plan")
+    const sdkPlanSuggestion = suggestions.find((s) => s.name === "/plan" && s.source === "sdk")
     const clearHistorySuggestion = suggestions.find((s) => s.name === "/clear-history")
 
-    expect(planSuggestion?.value).toBe("/plan ")
+    expect(sdkPlanSuggestion?.value).toBe("/plan ")
     expect(clearHistorySuggestion?.value).toBe("/clear-history")
   })
 
@@ -116,7 +114,10 @@ describe("slash commands", () => {
       kind: "local_command",
       command: { name: "clear", args: [] },
     })
-    expect(resolveComposerSubmission("/plan")).toEqual({ kind: "sdk_prompt" })
+    expect(resolveComposerSubmission("/plan")).toEqual({
+      kind: "local_command",
+      command: { name: "plan", args: [] },
+    })
     expect(resolveComposerSubmission("hello")).toEqual({ kind: "sdk_prompt" })
     expect(resolveComposerSubmission("   ")).toEqual({ kind: "empty" })
   })
@@ -144,7 +145,7 @@ describe("slash commands", () => {
     // normalizeSlashQuery strips the leading "/" — the App layer trims leading
     // whitespace before passing the token. Verify the underlying filter still
     // works correctly for bare tokens.
-    expect(filterLocalSlashCommands("").length).toBe(12) // all local commands
+    expect(filterLocalSlashCommands("").length).toBe(13) // all local commands
     expect(filterLocalSlashCommands("mo").map((c) => c.name)).toEqual(["model"])
     expect(filterLocalSlashCommands("ses").map((c) => c.name)).toEqual(["sessions"])
   })
@@ -172,6 +173,7 @@ describe("slash commands", () => {
 
     expect(suggestions.map((suggestion) => suggestion.name)).toEqual([
       "/perm",
+      "/plan",
       "/plan",
     ])
   })

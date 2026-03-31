@@ -83,18 +83,18 @@ describe("App slash picker", () => {
     frame = await typeAndRender(renderedApp.testSetup, "p")
     expect(renderedApp.service.getState().promptText).toBe("/p")
     expect(frame).toContain("slash commands")
-    expect(frame).toMatch(/slash commands\s+2/)
+    expect(frame).toMatch(/slash commands\s+3/)
     expect(frame).toContain("/perm")
     expect(frame).not.toContain("/clear")
 
     frame = await typeAndRender(renderedApp.testSetup, "l")
     expect(renderedApp.service.getState().promptText).toBe("/pl")
-    expect(frame).toMatch(/slash commands\s+1/)
+    expect(frame).toMatch(/slash commands\s+2/)
     expect(frame).not.toContain("/perm")
 
     frame = await pressBackspaceAndRender(renderedApp.testSetup)
     expect(renderedApp.service.getState().promptText).toBe("/p")
-    expect(frame).toMatch(/slash commands\s+2/)
+    expect(frame).toMatch(/slash commands\s+3/)
     expect(frame).toContain("/perm")
 
     frame = await pressBackspaceAndRender(renderedApp.testSetup)

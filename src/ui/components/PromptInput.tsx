@@ -42,10 +42,17 @@ export function PromptInput(props: PromptInputProps) {
     }
   }
 
+  const permissionMode = useConversationSelector((s) => s.permissionMode)
+  const isPlanMode = permissionMode === "plan"
+
   const isCompact = width < 92
   const showsLoadingIndicator = isStartupLoading(startup)
   const promptTextColor = isEditingDisabled || !props.canSubmit ? theme.mutedText : theme.primary
-  const borderColor = isFocused ? theme.borderStrong : theme.borderSubtle
+  const borderColor = isPlanMode
+    ? theme.warning
+    : isFocused
+      ? theme.borderStrong
+      : theme.borderSubtle
   const placeholder = isEditingDisabled
     ? "Waiting for Claude..."
     : !props.canSubmit
@@ -61,6 +68,7 @@ export function PromptInput(props: PromptInputProps) {
         border
         borderStyle="rounded"
         borderColor={borderColor}
+        {...(isPlanMode ? { title: isCompact ? " plan " : " plan mode " } : {})}
         backgroundColor={theme.surface}
         paddingX={1}
         onMouseDown={handlePromptMouseDown}

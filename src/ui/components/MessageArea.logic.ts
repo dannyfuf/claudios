@@ -1,5 +1,12 @@
-import type { ToolCallStatus, SpawnedTask, SpawnedTaskStatus, SpawnedTaskUsage } from "#sdk/types"
-import type { DisplayMessage } from "#state/types"
+import type {
+  ToolCall,
+  ToolCallStatus,
+  ToolCallFileChange,
+  SpawnedTask,
+  SpawnedTaskStatus,
+  SpawnedTaskUsage,
+} from "#sdk/types"
+import type { DisplayMessage, ThinkingDisplayMessage } from "#state/types"
 
 export type StatusTone = "warning" | "success" | "error" | "primary"
 
@@ -23,12 +30,6 @@ export type TaskStatusPresentation =
       readonly icon: "✓" | "✗" | "■"
       readonly tone: "success" | "error" | "primary"
     }
-
-type VisibleToolCalls<TToolCall> = {
-  readonly visibleToolCalls: readonly TToolCall[]
-  readonly hiddenCount: number
-  readonly hasOverflow: boolean
-}
 
 const TOOL_PREVIEW_KEYS = [
   "file_path",
@@ -90,29 +91,33 @@ export function shouldShowAssistantResponseDivider(
   return false
 }
 
-export function getVisibleToolCalls<TToolCall>(
-  toolCalls: readonly TToolCall[],
-  expanded: boolean,
-  maxVisible: number,
-): VisibleToolCalls<TToolCall> {
-  const safeMaxVisible = Math.max(1, maxVisible)
-  const hasOverflow = toolCalls.length > safeMaxVisible
+export function mergeConsecutiveThinkingMessages(
+  messages: readonly DisplayMessage[],
+): DisplayMessage[] {
+  const merged: DisplayMessage[] = []
 
-  if (!hasOverflow || expanded) {
-    return {
-      visibleToolCalls: toolCalls,
-      hiddenCount: 0,
-      hasOverflow,
+  for (const message of messages) {
+    const previousMessage = merged.at(-1)
+
+    if (message.kind !== "thinking" || previousMessage?.kind !== "thinking") {
+      merged.push(message)
+      continue
     }
+
+    merged[merged.length - 1] = {
+      ...previousMessage,
+      text: joinThinkingText(previousMessage.text, message.text),
+      isStreaming: message.isStreaming,
+      timestamp: message.timestamp,
+      taskId: previousMessage.taskId === message.taskId ? previousMessage.taskId : null,
+      parentToolUseId:
+        previousMessage.parentToolUseId === message.parentToolUseId
+          ? previousMessage.parentToolUseId
+          : null,
+    } satisfies ThinkingDisplayMessage
   }
 
-  const visibleToolCalls = toolCalls.slice(-safeMaxVisible)
-
-  return {
-    visibleToolCalls,
-    hiddenCount: toolCalls.length - visibleToolCalls.length,
-    hasOverflow,
-  }
+  return merged
 }
 
 export function normalizeToolLabel(value: string): string {
@@ -169,6 +174,16 @@ export function getToolBriefDetail(toolCall: {
   return ""
 }
 
+export function getToolCallDiffFileChange(
+  toolCall: Pick<ToolCall, "status" | "fileChange">,
+): ToolCallFileChange | null {
+  if (toolCall.status !== "completed") {
+    return null
+  }
+
+  return toolCall.fileChange ?? null
+}
+
 export function formatTaskKindLabel(task: Pick<SpawnedTask, "taskType" | "workflowName">): string {
   const workflowName = normalizeOptionalText(task.workflowName)
   if (workflowName) {
@@ -217,6 +232,12 @@ export function getTaskDetailLine(
   return ""
 }
 
+export function getTaskContextLabel(
+  task: Pick<SpawnedTask, "description" | "taskType" | "workflowName">,
+): string {
+  return `${formatTaskKindLabel(task)}: ${toPreviewLine(task.description)}`
+}
+
 function toPreviewLine(value: string): string {
   const singleLine = value.replace(/\s+/g, " ").trim()
 
@@ -225,6 +246,18 @@ function toPreviewLine(value: string): string {
   }
 
   return `${singleLine.slice(0, TOOL_PREVIEW_MAX_LENGTH - 3)}...`
+}
+
+function joinThinkingText(current: string, next: string): string {
+  if (current.length === 0) {
+    return next
+  }
+
+  if (next.length === 0) {
+    return current
+  }
+
+  return `${current}\n${next}`
 }
 
 function formatDurationMs(durationMs: number): string {

@@ -31,6 +31,8 @@ export type {
   AccountInfo,
   PermissionMode,
   ToolCall,
+  ToolCallFileChange,
+  ToolCallFileChangeType,
   ToolCallStatus,
   SpawnedTask,
   SpawnedTaskStatus,

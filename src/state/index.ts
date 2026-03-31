@@ -10,6 +10,8 @@ export type {
   DisplayMessage,
   UserDisplayMessage,
   AssistantDisplayMessage,
+  ThinkingDisplayMessage,
+  ToolCallDisplayMessage,
   SystemDisplayMessage,
   TaskDisplayMessage,
   ErrorDisplayMessage,

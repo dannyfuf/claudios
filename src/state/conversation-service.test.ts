@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { MessageUUID, SessionId, type Query } from "#sdk/types"
 import { ConversationService } from "#state/conversation-service"
 import type { AppConfig } from "#config/schema"
-import type { DisplayMessage, TaskDisplayMessage } from "#state/types"
+import type { DisplayMessage, TaskDisplayMessage, ToolCallDisplayMessage } from "#state/types"
 
 const TEST_CONFIG: AppConfig = {
   theme: "dark",
@@ -11,6 +11,7 @@ const TEST_CONFIG: AppConfig = {
   defaultPermissionMode: "default",
   keybindings: {},
   diffMode: "unified",
+  showThinking: true,
   claudePath: "claude",
 }
 
@@ -179,16 +180,42 @@ describe("ConversationService", () => {
     expect(service.getState().model).toBe("sonnet")
   })
 
-  it("merges consecutive assistant messages into a single message", async () => {
-    // When the SDK sends a tool-only assistant message followed by a text
-    // assistant message (same turn, no user message in between), they should
-    // be merged into a single DisplayMessage to avoid duplicate bubbles.
-    const sdkMessages = [
+  it("forwards interrupt requests to the active query", async () => {
+    let interruptCalls = 0
+    const query = createFakeQuery({
+      interrupt: async () => {
+        interruptCalls += 1
+      },
+    })
+    const service = new ConversationService(
+      TEST_CONFIG,
+      undefined,
+      {
+        createQuery: () => query,
+        getQueryMetadata: async () => createEmptyMetadata(),
+        getSessionMessages: async () => [],
+        listSessions: async () => [],
+        loadSupportedMetadata: async () => createEmptyMetadata(),
+        resumeSession: () => query,
+      },
+    )
+
+    service.setPromptText("hello")
+    await service.submitCurrentPrompt()
+    await service.interrupt()
+
+    expect(interruptCalls).toBe(1)
+  })
+
+  it("keeps assistant text and tool calls as separate chronological rows", async () => {
+    const service = await runServiceWithMessages([
       {
         type: "assistant",
-        uuid: "assistant-tools",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
         message: {
           content: [
+            { type: "text", text: "Let me inspect that file.", citations: null },
             {
               type: "tool_use",
               id: "tool-1",
@@ -197,13 +224,16 @@ describe("ConversationService", () => {
             },
           ],
         },
+        session_id: "session-1",
       },
       {
         type: "assistant",
-        uuid: "assistant-text",
+        uuid: "assistant-2",
+        parent_tool_use_id: null,
         message: {
           content: "Here is the answer.",
         },
+        session_id: "session-1",
       },
       {
         type: "result",
@@ -212,107 +242,51 @@ describe("ConversationService", () => {
         usage: { input_tokens: 100, output_tokens: 50 },
         session_id: "session-1",
       },
-    ]
+    ])
 
-    const query = createFakeQuery({
-      messages: sdkMessages,
-    })
-
-    const service = new ConversationService(
-      TEST_CONFIG,
-      undefined,
-      {
-        createQuery: () => query,
-        getQueryMetadata: async () => createEmptyMetadata(),
-        getSessionMessages: async () => [],
-        listSessions: async () => [],
-        loadSupportedMetadata: async () => createEmptyMetadata(),
-        resumeSession: () => query,
-      },
-    )
-
-    service.setPromptText("Explain this codebase")
-    await service.submitCurrentPrompt()
-    // Allow async iterator to complete
-    await Bun.sleep(10)
-
-    const messages = service.getState().messages
-    const assistantMessages = messages.filter((m) => m.kind === "assistant")
-
-    // Should be merged into ONE assistant message, not two
-    expect(assistantMessages.length).toBe(1)
-
-    const merged = assistantMessages[0]!
-    expect(merged.text).toBe("Here is the answer.")
-    expect(merged.kind === "assistant" && merged.toolCalls.length).toBe(1)
-    expect(merged.kind === "assistant" && merged.toolCalls[0]!.name).toBe("Read")
+    expect(service.getState().messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Run task projection test",
+      "assistant:Let me inspect that file.",
+      "tool_call:Read",
+      "assistant:Here is the answer.",
+    ])
   })
 
-  it("merges streamed assistant turns separated by tool use into a single message", async () => {
-    // Simulates the full streaming flow:
-    // 1. stream_event deltas (round 1 text)
-    // 2. assistant final (round 1: text + tool_use)
-    // 3. stream_event deltas (round 2 text)
-    // 4. assistant final (round 2: text only)
-    // Should produce ONE merged assistant message, not two.
-    const sdkMessages = [
-      // Round 1: streaming deltas
+  it("captures thinking from streaming deltas and final assistant blocks", async () => {
+    const service = await runServiceWithMessages([
       {
         type: "stream_event",
         uuid: "msg-1",
+        parent_tool_use_id: null,
         event: {
           type: "content_block_delta",
-          delta: { text: "Let me check " },
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Analyzing the repository" },
         },
+        session_id: "session-1",
       },
       {
         type: "stream_event",
         uuid: "msg-1",
+        parent_tool_use_id: null,
         event: {
           type: "content_block_delta",
-          delta: { text: "that file." },
+          index: 1,
+          delta: { type: "text_delta", text: "Here is the answer." },
         },
+        session_id: "session-1",
       },
-      // Round 1: assistant final with tool_use
       {
         type: "assistant",
         uuid: "msg-1",
+        parent_tool_use_id: null,
         message: {
           content: [
-            { type: "text", text: "Let me check that file." },
-            {
-              type: "tool_use",
-              id: "tool-1",
-              name: "Read",
-              input: { file_path: "/src/index.ts" },
-            },
+            { type: "thinking", thinking: "Analyzing the repository", signature: "sig-1" },
+            { type: "text", text: "Here is the answer.", citations: null },
           ],
         },
-      },
-      // Round 2: streaming deltas (new turn after tool execution)
-      {
-        type: "stream_event",
-        uuid: "msg-2",
-        event: {
-          type: "content_block_delta",
-          delta: { text: "Here is " },
-        },
-      },
-      {
-        type: "stream_event",
-        uuid: "msg-2",
-        event: {
-          type: "content_block_delta",
-          delta: { text: "the answer." },
-        },
-      },
-      // Round 2: assistant final
-      {
-        type: "assistant",
-        uuid: "msg-2",
-        message: {
-          content: "Here is the answer.",
-        },
+        session_id: "session-1",
       },
       {
         type: "result",
@@ -321,39 +295,566 @@ describe("ConversationService", () => {
         usage: { input_tokens: 200, output_tokens: 100 },
         session_id: "session-1",
       },
-    ]
-
-    const query = createFakeQuery({ messages: sdkMessages })
-
-    const service = new ConversationService(
-      TEST_CONFIG,
-      undefined,
-      {
-        createQuery: () => query,
-        getQueryMetadata: async () => createEmptyMetadata(),
-        getSessionMessages: async () => [],
-        listSessions: async () => [],
-        loadSupportedMetadata: async () => createEmptyMetadata(),
-        resumeSession: () => query,
-      },
-    )
-
-    service.setPromptText("Explain this")
-    await service.submitCurrentPrompt()
-    await Bun.sleep(10)
+    ])
 
     const messages = service.getState().messages
-    const assistantMessages = messages.filter((m) => m.kind === "assistant")
 
-    // Should be ONE merged assistant message
-    expect(assistantMessages.length).toBe(1)
+    expect(messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Run task projection test",
+      "thinking:Analyzing the repository",
+      "assistant:Here is the answer.",
+    ])
+    expect(messages[1]?.kind === "thinking" && messages[1].isStreaming).toBe(false)
+    expect(messages[2]?.kind === "assistant" && messages[2].isStreaming).toBe(false)
+  })
 
-    const merged = assistantMessages[0]!
-    // Text from both rounds, concatenated
-    expect(merged.text).toBe("Let me check that file.\n\nHere is the answer.")
-    // Tool calls from round 1 preserved
-    expect(merged.kind === "assistant" && merged.toolCalls.length).toBe(1)
-    expect(merged.kind === "assistant" && merged.toolCalls[0]!.name).toBe("Read")
+  it("merges consecutive thinking chunks until another event arrives", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "stream_event",
+        uuid: "msg-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Plan " },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "stream_event",
+        uuid: "msg-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "thinking_delta", thinking: "search" },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "msg-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "thinking", thinking: "Plan ", signature: "sig-1" },
+            { type: "thinking", thinking: "search", signature: "sig-2" },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Read",
+              input: { file_path: "/src/index.ts" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "stream_event",
+        uuid: "msg-2",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Summarize " },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "stream_event",
+        uuid: "msg-2",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "thinking_delta", thinking: "results" },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "msg-2",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "thinking", thinking: "Summarize ", signature: "sig-3" },
+            { type: "thinking", thinking: "results", signature: "sig-4" },
+            { type: "text", text: "Done.", citations: null },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.02,
+        usage: { input_tokens: 200, output_tokens: 100 },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(service.getState().messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Run task projection test",
+      "thinking:Plan search",
+      "tool_call:Read",
+      "thinking:Summarize results",
+      "assistant:Done.",
+    ])
+  })
+
+  it("keeps streamed assistant text separated by tool rows across turns", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "stream_event",
+        uuid: "msg-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Let me check that file." },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "msg-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "text", text: "Let me check that file.", citations: null },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Read",
+              input: { file_path: "/src/index.ts" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "stream_event",
+        uuid: "msg-2",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Here is the answer." },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "msg-2",
+        parent_tool_use_id: null,
+        message: {
+          content: "Here is the answer.",
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.02,
+        usage: { input_tokens: 200, output_tokens: 100 },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(service.getState().messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Run task projection test",
+      "assistant:Let me check that file.",
+      "tool_call:Read",
+      "assistant:Here is the answer.",
+    ])
+  })
+
+  it("reuses one tool row when progress arrives before the final assistant tool block", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "tool_progress",
+        tool_use_id: "tool-1",
+        tool_name: "Read",
+        parent_tool_use_id: null,
+        elapsed_time_seconds: 0.5,
+        uuid: "tool-progress-1",
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Read",
+              input: { file_path: "/src/index.ts" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "tool_use_summary",
+        summary: "Read src/index.ts",
+        preceding_tool_use_ids: ["tool-1"],
+        uuid: "tool-summary-1",
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        session_id: "session-1",
+      },
+    ])
+
+    const toolMessages = getToolCallMessages(service)
+
+    expect(toolMessages).toHaveLength(1)
+    expect(toolMessages[0]).toMatchObject({
+      toolCall: {
+        id: "tool-1",
+        name: "Read",
+        input: { file_path: "/src/index.ts" },
+        status: "completed",
+        output: "Read src/index.ts",
+        elapsedSeconds: 0.5,
+      },
+    })
+  })
+
+  it("merges live file-write tool results into the existing tool row without adding a user bubble", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Write",
+              input: { file_path: "/tmp/example.ts", content: "const after = 2\n" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      createUserToolResultMessage({
+        uuid: "user-tool-result-1",
+        toolUseIds: ["tool-1"],
+        toolUseResult: createFileWriteToolResult({
+          type: "update",
+          filePath: "/tmp/example.ts",
+          content: "const after = 2\n",
+          originalFile: "const before = 1\n",
+          structuredPatch: [
+            {
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              lines: ["-const before = 1", "+const after = 2"],
+            },
+          ],
+        }),
+      }),
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(service.getState().messages.filter((message) => message.kind === "user")).toHaveLength(1)
+    expect(getToolCallMessages(service)).toMatchObject([
+      {
+        toolCall: {
+          id: "tool-1",
+          name: "Write",
+          status: "completed",
+          fileChange: {
+            filePath: "/tmp/example.ts",
+            changeType: "modified",
+          },
+        },
+      },
+    ])
+    expect(getToolCallMessages(service)[0]?.toolCall.fileChange?.patch).toContain("+++ /tmp/example.ts")
+  })
+
+  it("rehydrates file diffs from session history tool results", async () => {
+    const service = new ConversationService(TEST_CONFIG, undefined, {
+      createQuery: () => createFakeQuery(),
+      getQueryMetadata: async () => createEmptyMetadata(),
+      getSessionMessages: async () => [
+        { type: "user", uuid: "user-1", parent_tool_use_id: null, message: { content: "Earlier prompt" } },
+        {
+          type: "assistant",
+          uuid: "assistant-1",
+          parent_tool_use_id: null,
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "Edit",
+                input: { file_path: "/tmp/example.ts" },
+              },
+            ],
+          },
+        },
+        createUserToolResultMessage({
+          uuid: "user-tool-result-1",
+          toolUseIds: ["tool-1"],
+          toolUseResult: createFileEditToolResult({
+            filePath: "/tmp/example.ts",
+            oldString: "const before = 1",
+            newString: "const after = 2",
+            originalFile: "const before = 1\n",
+            structuredPatch: [
+              {
+                oldStart: 1,
+                oldLines: 1,
+                newStart: 1,
+                newLines: 1,
+                lines: ["-const before = 1", "+const after = 2"],
+              },
+            ],
+            userModified: false,
+            replaceAll: false,
+          }),
+        }),
+        {
+          type: "assistant",
+          uuid: "assistant-2",
+          parent_tool_use_id: null,
+          message: { content: "Updated the file." },
+        },
+      ],
+      listSessions: async () => [],
+      loadSupportedMetadata: async () => createEmptyMetadata(),
+      resumeSession: () => createFakeQuery(),
+    })
+
+    await service.loadSession("session-1")
+
+    expect(service.getState().messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Earlier prompt",
+      "tool_call:Edit",
+      "assistant:Updated the file.",
+    ])
+    expect(getToolCallMessages(service)).toMatchObject([
+      {
+        toolCall: {
+          id: "tool-1",
+          fileChange: {
+            filePath: "/tmp/example.ts",
+            changeType: "modified",
+          },
+        },
+      },
+    ])
+  })
+
+  it("marks a running tool as completed once assistant text resumes", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "Read",
+              input: { file_path: "/src/index.ts" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-2",
+        parent_tool_use_id: null,
+        message: {
+          content: "The file has been inspected.",
+        },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(getToolCallMessages(service)).toMatchObject([
+      {
+        toolCall: {
+          id: "tool-1",
+          name: "Read",
+          status: "completed",
+        },
+      },
+    ])
+  })
+
+  it("completes an earlier top-level Bash tool when a new tool starts in the same scope", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "assistant",
+        uuid: "assistant-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-bash-1",
+              name: "Bash",
+              input: { command: "ls" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "tool_progress",
+        tool_use_id: "tool-bash-1",
+        tool_name: "Bash",
+        parent_tool_use_id: null,
+        elapsed_time_seconds: 0.8,
+        uuid: "tool-progress-1",
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-2",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-read-1",
+              name: "Read",
+              input: { file_path: "/src/index.ts" },
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(getToolCallMessages(service)).toMatchObject([
+      {
+        toolCall: {
+          id: "tool-bash-1",
+          name: "Bash",
+          status: "completed",
+          elapsedSeconds: 0.8,
+        },
+      },
+      {
+        toolCall: {
+          id: "tool-read-1",
+          name: "Read",
+          status: "running",
+        },
+      },
+    ])
+  })
+
+  it("attaches tool rows to the correct task scope", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "tool_progress",
+        tool_use_id: "nested-tool-1",
+        tool_name: "Grep",
+        parent_tool_use_id: "task-root-tool",
+        elapsed_time_seconds: 0.4,
+        uuid: "tool-progress-1",
+        session_id: "session-1",
+      },
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-1",
+        tool_use_id: "task-root-tool",
+        description: "Inspect command routing",
+        task_type: "local_agent",
+        uuid: "task-start-1",
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        session_id: "session-1",
+      },
+    ])
+
+    const toolMessages = getToolCallMessages(service)
+
+    expect(toolMessages).toHaveLength(1)
+    expect(toolMessages[0]).toMatchObject({
+      taskId: "task-1",
+      parentToolUseId: "task-root-tool",
+      toolCall: {
+        id: "nested-tool-1",
+        name: "Grep",
+        status: "completed",
+      },
+    })
+  })
+
+  it("settles running task-scoped tool calls when the task finishes", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "tool_progress",
+        tool_use_id: "nested-tool-1",
+        tool_name: "Grep",
+        parent_tool_use_id: "task-root-tool",
+        elapsed_time_seconds: 0.4,
+        uuid: "tool-progress-1",
+        session_id: "session-1",
+      },
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-1",
+        tool_use_id: "task-root-tool",
+        description: "Inspect command routing",
+        task_type: "local_agent",
+        uuid: "task-start-1",
+        session_id: "session-1",
+      },
+      {
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-1",
+        status: "completed",
+        output_file: "/tmp/task-1.md",
+        summary: "done",
+        uuid: "task-finish-1",
+        session_id: "session-1",
+      },
+    ])
+
+    expect(getToolCallMessages(service)).toMatchObject([
+      {
+        taskId: "task-1",
+        toolCall: {
+          id: "nested-tool-1",
+          status: "completed",
+        },
+      },
+    ])
   })
 
   it("projects task lifecycle events into one stable task row", async () => {
@@ -661,6 +1162,7 @@ async function runServiceWithMessages(messages: readonly unknown[]): Promise<Con
 }
 
 function createFakeQuery(overrides?: {
+  readonly interrupt?: Query["interrupt"]
   readonly setModel?: Query["setModel"]
   readonly messages?: readonly unknown[]
 }): Query {
@@ -673,9 +1175,9 @@ function createFakeQuery(overrides?: {
       models: [],
       account: { email: "test@example.com" },
     }),
-    interrupt: async () => {
+    interrupt: overrides?.interrupt ?? (async () => {
       return
-    },
+    }),
     setModel: overrides?.setModel ?? (async () => {
       return
     }),
@@ -718,9 +1220,70 @@ function deferred<T>() {
   }
 }
 
+function createUserToolResultMessage(options: {
+  readonly uuid: string
+  readonly toolUseIds: readonly string[]
+  readonly toolUseResult: unknown
+}): Record<string, unknown> {
+  return {
+    type: "user",
+    uuid: options.uuid,
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: options.toolUseIds.map((toolUseId) => ({
+        type: "tool_result",
+        tool_use_id: toolUseId,
+        content: "ok",
+      })),
+    },
+    tool_use_result: options.toolUseResult,
+  }
+}
+
+function createFileWriteToolResult(result: {
+  readonly type: "create" | "update"
+  readonly filePath: string
+  readonly content: string
+  readonly originalFile: string | null
+  readonly structuredPatch: readonly {
+    readonly oldStart: number
+    readonly oldLines: number
+    readonly newStart: number
+    readonly newLines: number
+    readonly lines: readonly string[]
+  }[]
+}): Record<string, unknown> {
+  return { ...result }
+}
+
+function createFileEditToolResult(result: {
+  readonly filePath: string
+  readonly oldString: string
+  readonly newString: string
+  readonly originalFile: string
+  readonly structuredPatch: readonly {
+    readonly oldStart: number
+    readonly oldLines: number
+    readonly newStart: number
+    readonly newLines: number
+    readonly lines: readonly string[]
+  }[]
+  readonly userModified: boolean
+  readonly replaceAll: boolean
+}): Record<string, unknown> {
+  return { ...result }
+}
+
 function getTaskMessages(service: ConversationService): TaskDisplayMessage[] {
   return service.getState().messages.filter(
     (message): message is TaskDisplayMessage => message.kind === "task",
+  )
+}
+
+function getToolCallMessages(service: ConversationService): ToolCallDisplayMessage[] {
+  return service.getState().messages.filter(
+    (message): message is ToolCallDisplayMessage => message.kind === "tool_call",
   )
 }
 
@@ -732,9 +1295,12 @@ function getMessageText(message: DisplayMessage | undefined): string {
   switch (message.kind) {
     case "user":
     case "assistant":
+    case "thinking":
     case "system":
     case "error":
       return message.text
+    case "tool_call":
+      return message.toolCall.name
     case "task":
       return message.task.description
   }

@@ -24,11 +24,15 @@ import type {
 } from "#sdk/types"
 import { MessageUUID, SessionId, sessionSummaryFromSDK } from "#sdk/types"
 import type { SessionSummary } from "#sdk/types"
+import { extractToolResultIds, normalizeFileToolResult } from "#sdk/tool-result"
 import {
+  type AssistantDisplayMessage,
   type ConversationState,
   type ConversationAction,
   type DisplayMessage,
+  type ThinkingDisplayMessage,
   type TaskDisplayMessage,
+  type ToolCallDisplayMessage,
   type StartupState,
   type StartupTaskState,
   conversationReducer,
@@ -53,6 +57,23 @@ type ConversationServiceDependencies = {
   readonly listSessions: typeof listSessions
   readonly loadSupportedMetadata: typeof loadSupportedMetadataFromSDK
   readonly resumeSession: typeof resumeSession
+}
+
+type MessageScope = {
+  readonly taskId: string | null
+  readonly parentToolUseId: string | null
+}
+
+type StreamingBlockKind = "assistant" | "thinking"
+
+type StreamingBlockState = {
+  readonly rowUuid: MessageUUID
+  readonly kind: StreamingBlockKind
+  readonly text: string
+}
+
+type SDKMessageContext = {
+  readonly streamingBlocks: Map<string, StreamingBlockState>
 }
 
 const defaultConversationServiceDependencies: ConversationServiceDependencies = {
@@ -101,8 +122,8 @@ export class ConversationService {
         model: config.defaultModel,
         permissionMode: config.defaultPermissionMode,
         themeName: config.theme,
-        showThinking: config.showThinking,
         diffMode: config.diffMode,
+        showThinking: config.showThinking,
       }
   }
 
@@ -288,9 +309,7 @@ export class ConversationService {
 
     try {
       const history = await this.dependencies.getSessionMessages(sessionId)
-      const historyMessages = history
-        .map((message) => displayMessageFromSessionMessage(message))
-        .filter((message): message is DisplayMessage => message !== null)
+      const historyMessages = projectSessionHistory(history)
 
       this.dispatch({ type: "load_history", messages: historyMessages })
       this.dispatch({ type: "set_session", sessionId: SessionId(sessionId) })
@@ -394,29 +413,16 @@ export class ConversationService {
   // -------------------------------------------------------------------------
 
   private async processQueryOutput(q: Query): Promise<void> {
-    let currentAssistantUuid: string | null = null
-    let streamingContent = ""
-    let resumedPriorText = ""
+    const ctx: SDKMessageContext = {
+      streamingBlocks: new Map(),
+    }
 
     try {
       // Fetch available models and commands from the query
       this.fetchQueryMetadata(q)
 
       for await (const msg of q) {
-        this.handleSDKMessage(msg, {
-          getCurrentAssistantUuid: () => currentAssistantUuid,
-          setCurrentAssistantUuid: (uuid: string | null) => {
-            currentAssistantUuid = uuid
-          },
-          getStreamingContent: () => streamingContent,
-          setStreamingContent: (content: string) => {
-            streamingContent = content
-          },
-          getResumedPriorText: () => resumedPriorText,
-          setResumedPriorText: (text: string) => {
-            resumedPriorText = text
-          },
-        })
+        this.handleSDKMessage(msg, ctx)
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -430,123 +436,21 @@ export class ConversationService {
 
   private handleSDKMessage(
     msg: SDKMessage,
-    ctx: {
-      getCurrentAssistantUuid: () => string | null
-      setCurrentAssistantUuid: (uuid: string | null) => void
-      getStreamingContent: () => string
-      setStreamingContent: (content: string) => void
-      getResumedPriorText: () => string
-      setResumedPriorText: (text: string) => void
-    },
+    ctx: SDKMessageContext,
   ): void {
     switch (msg.type) {
       case "assistant": {
-        const text = extractTextFromMessage(msg.message)
-        const streamingMessage = this.getLatestStreamingAssistantMessage()
-        const extractedToolCalls = extractToolCallsFromAssistantMessage(msg.message)
+        this.handleAssistantMessage(msg, ctx)
+        break
+      }
 
-        if (streamingMessage) {
-          // If this message was resumed from a prior turn, prepend the
-          // prior turn's text so it isn't lost during finalization.
-          const priorText = ctx.getResumedPriorText()
-          const finalText = priorText && text
-            ? priorText + "\n\n" + text
-            : text || priorText
-          const toolCalls = finalizeToolCalls(
-            mergeToolCalls(streamingMessage.toolCalls, extractedToolCalls),
-          )
-          this.dispatch({
-            type: "finalize_assistant_message",
-            uuid: streamingMessage.uuid,
-            text: finalText,
-            toolCalls,
-          })
-        } else {
-          // Check if the last message is a non-streaming assistant message
-          // from the same turn (no user message in between). If so, merge
-          // into it to avoid duplicate assistant bubbles when the SDK sends
-          // a tool-only message followed by a text-only message.
-          const lastMsg = this.state.messages.at(-1)
-          if (lastMsg?.kind === "assistant" && !lastMsg.isStreaming) {
-            const mergedText = lastMsg.text && text
-              ? lastMsg.text + "\n\n" + text
-              : text || lastMsg.text
-            const mergedToolCalls = finalizeToolCalls(
-              mergeToolCalls(lastMsg.toolCalls, extractedToolCalls),
-            )
-            this.dispatch({
-              type: "finalize_assistant_message",
-              uuid: lastMsg.uuid,
-              text: mergedText,
-              toolCalls: mergedToolCalls,
-            })
-          } else {
-            const uuid = MessageUUID(msg.uuid)
-            this.dispatch({
-              type: "append_message",
-              message: {
-                kind: "assistant",
-                uuid,
-                text,
-                toolCalls: finalizeToolCalls(extractedToolCalls),
-                isStreaming: false,
-                timestamp: new Date(),
-              },
-            })
-          }
-        }
-        ctx.setCurrentAssistantUuid(null)
-        ctx.setStreamingContent("")
-        ctx.setResumedPriorText("")
+      case "user": {
+        this.handleUserMessage(msg)
         break
       }
 
       case "stream_event": {
-        const event = msg.event
-        if (event.type === "content_block_delta" && "delta" in event) {
-          const delta = event.delta as unknown as Record<string, unknown>
-          if ("text" in delta && typeof delta["text"] === "string") {
-            const deltaText = delta["text"] as string
-
-            if (!ctx.getCurrentAssistantUuid()) {
-              // Check if the last message is a finalized assistant from the
-              // same turn. If so, resume streaming on it instead of creating
-              // a duplicate message.
-              const lastMsg = this.state.messages.at(-1)
-              if (lastMsg?.kind === "assistant" && !lastMsg.isStreaming) {
-                ctx.setCurrentAssistantUuid(lastMsg.uuid)
-                ctx.setResumedPriorText(lastMsg.text)
-                // Pre-seed streaming content with existing text so the UI
-                // shows the full accumulated text during streaming.
-                const prefix = lastMsg.text ? lastMsg.text + "\n\n" : ""
-                ctx.setStreamingContent(prefix)
-                this.dispatch({
-                  type: "set_message_streaming",
-                  uuid: lastMsg.uuid,
-                  isStreaming: true,
-                })
-              } else {
-                const uuid = msg.uuid
-                ctx.setCurrentAssistantUuid(uuid)
-                this.dispatch({
-                  type: "append_message",
-                  message: {
-                    kind: "assistant",
-                    uuid: MessageUUID(uuid),
-                    text: deltaText,
-                    toolCalls: [],
-                    isStreaming: true,
-                    timestamp: new Date(),
-                  },
-                })
-              }
-            }
-
-            const newContent = ctx.getStreamingContent() + deltaText
-            ctx.setStreamingContent(newContent)
-            this.dispatch({ type: "update_streaming_text", text: newContent })
-          }
-        }
+        this.handleStreamEventMessage(msg, ctx)
         break
       }
 
@@ -557,6 +461,7 @@ export class ConversationService {
             costUsd: msg.total_cost_usd,
             tokens: msg.usage.input_tokens + msg.usage.output_tokens,
           })
+          this.finalizeAllRunningToolCalls("completed")
           if (msg.session_id) {
             this.dispatch({
               type: "set_session",
@@ -564,9 +469,9 @@ export class ConversationService {
             })
           }
         } else {
-          const errors = "errors" in msg ? (msg as any).errors : []
+          this.finalizeAllRunningToolCalls("error")
           this.appendErrorMessage(
-            Array.isArray(errors) ? errors.join("\n") : "Query failed",
+            msg.errors.length > 0 ? msg.errors.join("\n") : "Query failed",
           )
         }
         this.dispatch({ type: "set_session_state", state: { status: "idle" } })
@@ -616,38 +521,456 @@ export class ConversationService {
       }
 
       case "tool_progress": {
-        const assistantUuid = ctx.getCurrentAssistantUuid()
-        if (assistantUuid) {
-          this.dispatch({
-            type: "update_tool_call",
-            messageUuid: MessageUUID(assistantUuid),
-            toolCall: {
-              id: msg.tool_use_id,
-              name: msg.tool_name,
-              input: {},
-              status: "running",
-              output: null,
-              elapsedSeconds: msg.elapsed_time_seconds,
-            },
-          })
-        }
+        this.handleToolProgressMessage(msg)
         break
       }
 
       case "tool_use_summary": {
-        for (const toolUseId of msg.preceding_tool_use_ids) {
-          this.updateToolCallById(toolUseId, (toolCall) => ({
-            ...toolCall,
-            status: "completed",
-            output: msg.summary,
-          }))
-        }
+        this.handleToolUseSummaryMessage(msg)
         break
       }
 
       default:
         break
     }
+  }
+
+  private handleAssistantMessage(
+    msg: Extract<SDKMessage, { readonly type: "assistant" }>,
+    ctx: SDKMessageContext,
+  ): void {
+    const timestamp = new Date()
+    const scope = this.resolveMessageScope(msg.parent_tool_use_id)
+    const blocks = extractAssistantBlocks(msg.uuid, msg.message, {
+      defaultToolStatus: "running",
+    })
+    let hasFinalizedScopeTools = false
+
+    for (const block of blocks) {
+      switch (block.kind) {
+        case "assistant":
+        case "thinking":
+          if (!hasFinalizedScopeTools) {
+            this.finalizeRunningToolCallsForScope(scope, "completed")
+            hasFinalizedScopeTools = true
+          }
+          this.upsertTranscriptTextMessage({
+            kind: block.kind,
+            uuid: this.resolveTranscriptBlockUuid(msg.uuid, block, ctx),
+            text: block.text,
+            isStreaming: false,
+            timestamp,
+            scope,
+          })
+          break
+        case "tool_call":
+          this.upsertToolCallMessage(block.toolCall, scope, timestamp)
+          break
+      }
+    }
+
+    this.finalizeStreamingBlocksForMessage(msg.uuid, ctx.streamingBlocks)
+  }
+
+  private handleUserMessage(msg: Extract<SDKMessage, { readonly type: "user" }>): void {
+    const toolResultIds = extractToolResultIds(msg.message)
+    if (toolResultIds.length === 0) {
+      return
+    }
+
+    for (const [index, toolUseId] of toolResultIds.entries()) {
+      const toolCallMessage = this.getToolCallMessage(toolUseId)
+      if (!toolCallMessage) {
+        continue
+      }
+
+      const fileChange = normalizeFileToolResult(
+        toolCallMessage.toolCall.name,
+        pickIndexedToolUseResult(msg.tool_use_result, index),
+      )
+
+      if (!fileChange) {
+        continue
+      }
+
+      this.updateToolCallById(toolUseId, (toolCall) => ({
+        ...toolCall,
+        status: "completed",
+        fileChange,
+      }))
+    }
+  }
+
+  private handleStreamEventMessage(
+    msg: Extract<SDKMessage, { readonly type: "stream_event" }>,
+    ctx: SDKMessageContext,
+  ): void {
+    const timestamp = new Date()
+    const scope = this.resolveMessageScope(msg.parent_tool_use_id)
+
+    switch (msg.event.type) {
+      case "content_block_start": {
+        const contentBlock = msg.event.content_block
+
+        switch (contentBlock.type) {
+          case "text":
+            this.startStreamingTranscriptBlock(
+              msg.uuid,
+              msg.event.index,
+              "assistant",
+              contentBlock.text,
+              scope,
+              timestamp,
+              ctx,
+            )
+            break
+          case "thinking":
+            this.startStreamingTranscriptBlock(
+              msg.uuid,
+              msg.event.index,
+              "thinking",
+              contentBlock.thinking,
+              scope,
+              timestamp,
+              ctx,
+            )
+            break
+          case "tool_use":
+          case "server_tool_use":
+            this.upsertToolCallMessage(
+              {
+                id: contentBlock.id,
+                name: contentBlock.name,
+                input: isRecord(contentBlock.input) ? contentBlock.input : {},
+                status: "running",
+                output: null,
+                elapsedSeconds: null,
+              },
+              scope,
+              timestamp,
+            )
+            break
+          default:
+            break
+        }
+        break
+      }
+
+      case "content_block_delta": {
+        switch (msg.event.delta.type) {
+          case "text_delta":
+            this.appendStreamingTranscriptDelta(
+              msg.uuid,
+              msg.event.index,
+              "assistant",
+              msg.event.delta.text,
+              scope,
+              timestamp,
+              ctx,
+            )
+            break
+          case "thinking_delta":
+            this.appendStreamingTranscriptDelta(
+              msg.uuid,
+              msg.event.index,
+              "thinking",
+              msg.event.delta.thinking,
+              scope,
+              timestamp,
+              ctx,
+            )
+            break
+          default:
+            break
+        }
+        break
+      }
+
+      case "content_block_stop":
+        this.stopStreamingTranscriptBlock(msg.uuid, msg.event.index, ctx.streamingBlocks)
+        break
+
+      default:
+        break
+    }
+  }
+
+  private handleToolProgressMessage(
+    msg: Extract<SDKMessage, { readonly type: "tool_progress" }>,
+  ): void {
+    this.upsertToolCallMessage(
+      {
+        id: msg.tool_use_id,
+        name: msg.tool_name,
+        input: {},
+        status: "running",
+        output: null,
+        elapsedSeconds: msg.elapsed_time_seconds,
+      },
+      this.resolveMessageScope(msg.parent_tool_use_id, msg.task_id ?? null),
+      new Date(),
+    )
+  }
+
+  private handleToolUseSummaryMessage(
+    msg: Extract<SDKMessage, { readonly type: "tool_use_summary" }>,
+  ): void {
+    for (const toolUseId of msg.preceding_tool_use_ids) {
+      this.updateToolCallById(toolUseId, (toolCall) => ({
+        ...toolCall,
+        status: "completed",
+        output: msg.summary,
+      }))
+    }
+  }
+
+  private startStreamingTranscriptBlock(
+    messageUuid: string,
+    blockIndex: number,
+    kind: StreamingBlockKind,
+    initialText: string,
+    scope: MessageScope,
+    timestamp: Date,
+    ctx: SDKMessageContext,
+  ): void {
+    const key = getStreamingBlockKey(messageUuid, blockIndex)
+    const existing = ctx.streamingBlocks.get(key)
+    if (!existing) {
+      this.finalizeRunningToolCallsForScope(scope, "completed")
+    }
+    const reusableMessage = existing ? null : this.getLatestReusableTranscriptTextMessage(kind, scope)
+    const rowUuid =
+      existing?.rowUuid ?? reusableMessage?.uuid ?? transcriptMessageUuid(kind, messageUuid, blockIndex)
+    const nextText = `${existing?.text ?? reusableMessage?.text ?? ""}${initialText}`
+
+    ctx.streamingBlocks.set(key, {
+      rowUuid,
+      kind,
+      text: nextText,
+    })
+
+    if (nextText.length > 0) {
+      this.upsertTranscriptTextMessage({
+        kind,
+        uuid: rowUuid,
+        text: nextText,
+        isStreaming: true,
+        timestamp,
+        scope,
+      })
+    }
+  }
+
+  private appendStreamingTranscriptDelta(
+    messageUuid: string,
+    blockIndex: number,
+    kind: StreamingBlockKind,
+    deltaText: string,
+    scope: MessageScope,
+    timestamp: Date,
+    ctx: SDKMessageContext,
+  ): void {
+    const key = getStreamingBlockKey(messageUuid, blockIndex)
+    const existing = ctx.streamingBlocks.get(key)
+    if (!existing) {
+      this.finalizeRunningToolCallsForScope(scope, "completed")
+    }
+    const reusableMessage = existing ? null : this.getLatestReusableTranscriptTextMessage(kind, scope)
+    const rowUuid =
+      existing?.rowUuid ?? reusableMessage?.uuid ?? transcriptMessageUuid(kind, messageUuid, blockIndex)
+    const nextText = `${existing?.text ?? reusableMessage?.text ?? ""}${deltaText}`
+
+    ctx.streamingBlocks.set(key, {
+      rowUuid,
+      kind,
+      text: nextText,
+    })
+
+    if (nextText.length > 0) {
+      this.upsertTranscriptTextMessage({
+        kind,
+        uuid: rowUuid,
+        text: nextText,
+        isStreaming: true,
+        timestamp,
+        scope,
+      })
+    }
+  }
+
+  private stopStreamingTranscriptBlock(
+    messageUuid: string,
+    blockIndex: number,
+    streamingBlocks: Map<string, StreamingBlockState>,
+  ): void {
+    const key = getStreamingBlockKey(messageUuid, blockIndex)
+    const existing = streamingBlocks.get(key)
+    if (!existing) {
+      return
+    }
+
+    const message = this.getTranscriptTextMessage(existing.rowUuid)
+    if (message?.isStreaming) {
+      this.dispatch({
+        type: "set_message_streaming",
+        uuid: existing.rowUuid,
+        isStreaming: false,
+      })
+    }
+
+  }
+
+  private finalizeStreamingBlocksForMessage(
+    messageUuid: string,
+    streamingBlocks: Map<string, StreamingBlockState>,
+  ): void {
+    for (const [key, block] of streamingBlocks.entries()) {
+      if (!key.startsWith(`${messageUuid}:`)) {
+        continue
+      }
+
+      const message = this.getTranscriptTextMessage(block.rowUuid)
+      if (message?.isStreaming) {
+        this.dispatch({
+          type: "set_message_streaming",
+          uuid: block.rowUuid,
+          isStreaming: false,
+        })
+      }
+
+      streamingBlocks.delete(key)
+    }
+  }
+
+  private upsertTranscriptTextMessage(options: {
+    readonly kind: StreamingBlockKind
+    readonly uuid: MessageUUID
+    readonly text: string
+    readonly isStreaming: boolean
+    readonly timestamp: Date
+    readonly scope: MessageScope
+  }): void {
+    const existing = this.getTranscriptTextMessage(options.uuid)
+
+    if (!existing) {
+      if (options.text.length === 0) {
+        return
+      }
+
+      this.dispatch({
+        type: "append_message",
+        message: {
+          kind: options.kind,
+          uuid: options.uuid,
+          text: options.text,
+          isStreaming: options.isStreaming,
+          timestamp: options.timestamp,
+          taskId: options.scope.taskId,
+          parentToolUseId: options.scope.parentToolUseId,
+        },
+      })
+      return
+    }
+
+    if (existing.text !== options.text) {
+      this.dispatch({
+        type: "update_message_text",
+        uuid: options.uuid,
+        text: options.text,
+      })
+    }
+
+    if (existing.isStreaming !== options.isStreaming) {
+      this.dispatch({
+        type: "set_message_streaming",
+        uuid: options.uuid,
+        isStreaming: options.isStreaming,
+      })
+    }
+  }
+
+  private upsertToolCallMessage(toolCall: ToolCall, scope: MessageScope, timestamp: Date): void {
+    if (toolCall.status === "running") {
+      this.finalizeOtherRunningToolCallsForScope(scope, toolCall.id, "completed")
+    }
+
+    this.dispatch({
+      type: "upsert_tool_call_message",
+      toolCall,
+      timestamp,
+      taskId: scope.taskId,
+      parentToolUseId: scope.parentToolUseId,
+    })
+  }
+
+  private resolveTranscriptBlockUuid(
+    messageUuid: string,
+    block: Extract<AssistantBlock, { readonly kind: "assistant" | "thinking" }>,
+    ctx: SDKMessageContext,
+  ): MessageUUID {
+    for (const index of block.sourceIndices) {
+      const existing = ctx.streamingBlocks.get(getStreamingBlockKey(messageUuid, index))
+      if (existing) {
+        return existing.rowUuid
+      }
+    }
+
+    return block.uuid
+  }
+
+  private resolveMessageScope(parentToolUseId: string | null, taskId: string | null = null): MessageScope {
+    return {
+      taskId: taskId ?? this.getTaskIdForParentToolUseId(parentToolUseId),
+      parentToolUseId: parentToolUseId,
+    }
+  }
+
+  private getTaskIdForParentToolUseId(parentToolUseId: string | null): string | null {
+    if (!parentToolUseId) {
+      return null
+    }
+
+    for (const message of this.state.messages) {
+      if (message.kind === "task" && message.task.toolUseId === parentToolUseId) {
+        return message.task.id
+      }
+    }
+
+    return null
+  }
+
+  private getTranscriptTextMessage(
+    uuid: MessageUUID,
+  ): AssistantDisplayMessage | ThinkingDisplayMessage | null {
+    for (const message of this.state.messages) {
+      if (
+        (message.kind === "assistant" || message.kind === "thinking") &&
+        message.uuid === uuid
+      ) {
+        return message
+      }
+    }
+
+    return null
+  }
+
+  private getLatestReusableTranscriptTextMessage(
+    kind: StreamingBlockKind,
+    scope: MessageScope,
+  ): AssistantDisplayMessage | ThinkingDisplayMessage | null {
+    const lastMessage = this.state.messages.at(-1)
+
+    if (
+      lastMessage &&
+      (lastMessage.kind === "assistant" || lastMessage.kind === "thinking") &&
+      lastMessage.kind === kind &&
+      lastMessage.taskId === scope.taskId &&
+      lastMessage.parentToolUseId === scope.parentToolUseId
+    ) {
+      return lastMessage
+    }
+
+    return null
   }
 
   private async fetchQueryMetadata(q: Query): Promise<void> {
@@ -746,17 +1069,6 @@ export class ConversationService {
     return Stream.toAsyncIterable(stream)
   }
 
-  private getLatestStreamingAssistantMessage() {
-    for (let index = this.state.messages.length - 1; index >= 0; index -= 1) {
-      const message = this.state.messages[index]
-      if (message?.kind === "assistant" && message.isStreaming) {
-        return message
-      }
-    }
-
-    return null
-  }
-
   private getTaskMessage(taskId: string): TaskDisplayMessage | null {
     for (const message of this.state.messages) {
       if (message.kind === "task" && message.task.id === taskId) {
@@ -770,44 +1082,146 @@ export class ConversationService {
   private upsertTaskMessage(
     taskId: string,
     updater: (task: SpawnedTask | null) => SpawnedTask,
-  ): void {
+  ): SpawnedTask {
     const existing = this.getTaskMessage(taskId)
+    const nextTask = updater(existing?.task ?? null)
 
     this.dispatch({
       type: "upsert_task_message",
-      task: updater(existing?.task ?? null),
+      task: nextTask,
       timestamp: existing?.timestamp ?? new Date(),
     })
+
+    return nextTask
   }
 
   private handleTaskStartedMessage(message: SDKTaskStartedMessage): void {
-    this.upsertTaskMessage(message.task_id, (current) => mergeTaskStarted(current, message))
+    const task = this.upsertTaskMessage(message.task_id, (current) => mergeTaskStarted(current, message))
+    this.reconcileToolRowsForTask(task.id, task.toolUseId)
   }
 
   private handleTaskProgressMessage(message: SDKTaskProgressMessage): void {
-    this.upsertTaskMessage(message.task_id, (current) => mergeTaskProgress(current, message))
+    const task = this.upsertTaskMessage(message.task_id, (current) => mergeTaskProgress(current, message))
+    this.reconcileToolRowsForTask(task.id, task.toolUseId)
   }
 
   private handleTaskNotificationMessage(message: SDKTaskNotificationMessage): void {
-    this.upsertTaskMessage(message.task_id, (current) => mergeTaskNotification(current, message))
+    const task = this.upsertTaskMessage(message.task_id, (current) => mergeTaskNotification(current, message))
+    this.reconcileToolRowsForTask(task.id, task.toolUseId)
+    if (isFinalTaskStatus(task.status)) {
+      this.finalizeRunningToolCallsForTask(
+        task.id,
+        task.status === "failed" ? "error" : "completed",
+      )
+    }
+  }
+
+  private reconcileToolRowsForTask(taskId: string, parentToolUseId: string | null): void {
+    if (!parentToolUseId) {
+      return
+    }
+
+    for (const message of this.state.messages) {
+      if (
+        message.kind !== "tool_call" ||
+        message.taskId === taskId ||
+        message.parentToolUseId !== parentToolUseId
+      ) {
+        continue
+      }
+
+      this.dispatch({
+        type: "upsert_tool_call_message",
+        toolCall: message.toolCall,
+        timestamp: message.timestamp,
+        taskId,
+        parentToolUseId: message.parentToolUseId,
+      })
+    }
+  }
+
+  private getToolCallMessage(toolCallId: string): ToolCallDisplayMessage | null {
+    for (const message of this.state.messages) {
+      if (message.kind === "tool_call" && message.toolCall.id === toolCallId) {
+        return message
+      }
+    }
+
+    return null
   }
 
   private updateToolCallById(
     toolCallId: string,
     updater: (toolCall: ToolCall) => ToolCall,
-  ) {
-    for (const message of this.state.messages) {
-      if (message.kind !== "assistant") continue
-
-      const toolCall = message.toolCalls.find((candidate) => candidate.id === toolCallId)
-      if (!toolCall) continue
-
-      this.dispatch({
-        type: "update_tool_call",
-        messageUuid: message.uuid,
-        toolCall: updater(toolCall),
-      })
+  ): void {
+    const message = this.getToolCallMessage(toolCallId)
+    if (!message) {
       return
+    }
+
+    this.dispatch({
+      type: "upsert_tool_call_message",
+      toolCall: updater(message.toolCall),
+      timestamp: message.timestamp,
+      taskId: message.taskId,
+      parentToolUseId: message.parentToolUseId,
+    })
+  }
+
+  private finalizeRunningToolCallsForScope(
+    scope: MessageScope,
+    status: Exclude<ToolCall["status"], "running">,
+  ): void {
+    this.finalizeRunningToolCalls(
+      (message) =>
+        message.taskId === scope.taskId && message.parentToolUseId === scope.parentToolUseId,
+      status,
+    )
+  }
+
+  private finalizeOtherRunningToolCallsForScope(
+    scope: MessageScope,
+    activeToolUseId: string,
+    status: Exclude<ToolCall["status"], "running">,
+  ): void {
+    this.finalizeRunningToolCalls(
+      (message) =>
+        message.toolCall.id !== activeToolUseId &&
+        message.taskId === scope.taskId &&
+        message.parentToolUseId === scope.parentToolUseId,
+      status,
+    )
+  }
+
+  private finalizeRunningToolCallsForTask(
+    taskId: string,
+    status: Exclude<ToolCall["status"], "running">,
+  ): void {
+    this.finalizeRunningToolCalls((message) => message.taskId === taskId, status)
+  }
+
+  private finalizeAllRunningToolCalls(
+    status: Exclude<ToolCall["status"], "running">,
+  ): void {
+    this.finalizeRunningToolCalls(() => true, status)
+  }
+
+  private finalizeRunningToolCalls(
+    predicate: (message: ToolCallDisplayMessage) => boolean,
+    status: Exclude<ToolCall["status"], "running">,
+  ): void {
+    const runningToolIds = this.state.messages
+      .filter(
+        (message): message is ToolCallDisplayMessage =>
+          message.kind === "tool_call" && message.toolCall.status === "running" && predicate(message),
+      )
+      .map((message) => message.toolCall.id)
+
+    for (const toolCallId of runningToolIds) {
+      this.updateToolCallById(toolCallId, (toolCall) => ({
+        ...toolCall,
+        status,
+      }))
     }
   }
 }
@@ -816,108 +1230,348 @@ export class ConversationService {
 // Utility
 // ---------------------------------------------------------------------------
 
-function extractTextFromMessage(message: unknown): string {
-  if (!message || typeof message !== "object") return ""
-  const msg = message as Record<string, unknown>
-  const content = msg["content"]
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((block: unknown) => {
-        if (typeof block === "string") return block
-        if (block && typeof block === "object" && "text" in block) {
-          return String((block as Record<string, unknown>)["text"])
-        }
-        return ""
-      })
-      .join("")
+type AssistantBlock =
+  | {
+      readonly kind: "assistant"
+      readonly uuid: MessageUUID
+      readonly text: string
+      readonly sourceIndices: readonly number[]
+    }
+  | {
+      readonly kind: "thinking"
+      readonly uuid: MessageUUID
+      readonly text: string
+      readonly sourceIndices: readonly number[]
+    }
+  | {
+      readonly kind: "tool_call"
+      readonly uuid: MessageUUID
+      readonly toolCall: ToolCall
+    }
+
+function projectSessionHistory(history: readonly unknown[]): readonly DisplayMessage[] {
+  let state = initialConversationState
+
+  for (const message of history) {
+    state = projectSessionMessage(state, message)
   }
-  return ""
+
+  return state.messages
 }
 
-function displayMessageFromSessionMessage(message: unknown): DisplayMessage | null {
-  if (!message || typeof message !== "object") return null
+function projectSessionMessage(
+  state: ConversationState,
+  message: unknown,
+): ConversationState {
+  if (!isRecord(message)) {
+    return state
+  }
 
-  const raw = message as Record<string, unknown>
-  const type = raw["type"]
-  const uuid = typeof raw["uuid"] === "string" ? raw["uuid"] : crypto.randomUUID()
-  const content = extractTextFromMessage(raw["message"])
+  const type = message["type"]
+  const messageUuid = typeof message["uuid"] === "string" ? message["uuid"] : crypto.randomUUID()
+  const timestamp = new Date()
+  const scope: MessageScope = {
+    taskId: null,
+    parentToolUseId: normalizeOptionalString(message["parent_tool_use_id"]),
+  }
 
   if (type === "user") {
-    return {
-      kind: "user",
-      uuid: MessageUUID(uuid),
-      text: content,
-      timestamp: new Date(),
+    let nextState = projectHistoryToolResultMessage(state, message)
+    const text = extractTextContent(message["message"])
+
+    if (text.length === 0) {
+      return nextState
+    }
+
+    nextState = conversationReducer(nextState, {
+      type: "append_message",
+      message: {
+        kind: "user",
+        uuid: MessageUUID(messageUuid),
+        text,
+        timestamp,
+      },
+    })
+
+    return nextState
+  }
+
+  if (type !== "assistant") {
+    return state
+  }
+
+  let nextState = state
+
+  for (const block of extractAssistantBlocks(messageUuid, message["message"], {
+    defaultToolStatus: "completed",
+  })) {
+    switch (block.kind) {
+      case "assistant": {
+        nextState = conversationReducer(nextState, {
+          type: "append_message",
+          message: {
+            kind: "assistant",
+            uuid: block.uuid,
+            text: block.text,
+            isStreaming: false,
+            timestamp,
+            taskId: scope.taskId,
+            parentToolUseId: scope.parentToolUseId,
+          },
+        })
+        break
+      }
+      case "thinking": {
+        nextState = conversationReducer(nextState, {
+          type: "append_message",
+          message: {
+            kind: "thinking",
+            uuid: block.uuid,
+            text: block.text,
+            isStreaming: false,
+            timestamp,
+            taskId: scope.taskId,
+            parentToolUseId: scope.parentToolUseId,
+          },
+        })
+        break
+      }
+      case "tool_call": {
+        nextState = conversationReducer(nextState, {
+          type: "upsert_tool_call_message",
+          toolCall: block.toolCall,
+          timestamp,
+          taskId: scope.taskId,
+          parentToolUseId: scope.parentToolUseId,
+        })
+        break
+      }
     }
   }
 
-  if (type === "assistant") {
-    return {
-      kind: "assistant",
-      uuid: MessageUUID(uuid),
-      text: content,
-      toolCalls: [],
-      isStreaming: false,
-      timestamp: new Date(),
+  return nextState
+}
+
+function projectHistoryToolResultMessage(
+  state: ConversationState,
+  message: Record<string, unknown>,
+): ConversationState {
+  const toolResultIds = extractToolResultIds(message["message"])
+  if (toolResultIds.length === 0) {
+    return state
+  }
+
+  let nextState = state
+
+  for (const [index, toolUseId] of toolResultIds.entries()) {
+    const toolCallMessage = findToolCallMessage(nextState.messages, toolUseId)
+    if (!toolCallMessage) {
+      continue
+    }
+
+    const fileChange = normalizeFileToolResult(
+      toolCallMessage.toolCall.name,
+      pickIndexedToolUseResult(message["tool_use_result"], index),
+    )
+
+    if (!fileChange) {
+      continue
+    }
+
+    nextState = conversationReducer(nextState, {
+      type: "upsert_tool_call_message",
+      toolCall: {
+        ...toolCallMessage.toolCall,
+        status: "completed",
+        fileChange,
+      },
+      timestamp: toolCallMessage.timestamp,
+      taskId: toolCallMessage.taskId,
+      parentToolUseId: toolCallMessage.parentToolUseId,
+    })
+  }
+
+  return nextState
+}
+
+function findToolCallMessage(
+  messages: readonly DisplayMessage[],
+  toolCallId: string,
+): ToolCallDisplayMessage | null {
+  for (const message of messages) {
+    if (message.kind === "tool_call" && message.toolCall.id === toolCallId) {
+      return message
     }
   }
 
   return null
 }
 
-function extractToolCallsFromAssistantMessage(message: unknown) {
-  if (!message || typeof message !== "object") return []
+function pickIndexedToolUseResult(toolUseResult: unknown, index: number): unknown {
+  if (!Array.isArray(toolUseResult)) {
+    return toolUseResult
+  }
 
-  const raw = message as Record<string, unknown>
-  const content = raw["content"]
-  if (!Array.isArray(content)) return []
+  if (toolUseResult.length === 1) {
+    return toolUseResult[0]
+  }
 
-  return content.flatMap((block) => {
-    if (!block || typeof block !== "object") return []
-
-    const candidate = block as Record<string, unknown>
-    const type = candidate["type"]
-    const id = candidate["id"]
-    const name = candidate["name"]
-    const input = candidate["input"]
-
-    if (
-      (type === "tool_use" || type === "server_tool_use") &&
-      typeof id === "string" &&
-      typeof name === "string"
-    ) {
-      return [
-        {
-          id,
-          name,
-          input: isRecord(input) ? input : {},
-          status: "completed" as const,
-          output: null,
-          elapsedSeconds: null,
-        },
-      ]
-    }
-
-    return []
-  })
+  return toolUseResult[index]
 }
 
-function mergeToolCalls(existing: readonly ToolCall[], incoming: readonly ToolCall[]): ToolCall[] {
-  const merged = new Map(existing.map((toolCall) => [toolCall.id, toolCall]))
+function normalizeOptionalString(value: unknown): string | null {
+  return typeof value === "string" ? value : null
+}
 
-  for (const toolCall of incoming) {
-    const current = merged.get(toolCall.id)
-    merged.set(toolCall.id, {
-      ...current,
-      ...toolCall,
-      output: toolCall.output ?? current?.output ?? null,
-      elapsedSeconds: toolCall.elapsedSeconds ?? current?.elapsedSeconds ?? null,
-      input: Object.keys(toolCall.input).length > 0 ? toolCall.input : current?.input ?? {},
+function extractAssistantBlocks(
+  messageUuid: string,
+  message: unknown,
+  options: { readonly defaultToolStatus: ToolCall["status"] },
+): readonly AssistantBlock[] {
+  if (!isRecord(message)) {
+    return []
+  }
+
+  const content = message["content"]
+
+  if (typeof content === "string") {
+    return content.length > 0
+      ? [
+          {
+            kind: "assistant",
+            uuid: transcriptMessageUuid("assistant", messageUuid, 0),
+            text: content,
+            sourceIndices: [0],
+          },
+        ]
+      : []
+  }
+
+  if (!Array.isArray(content)) {
+    return []
+  }
+
+  const blocks: AssistantBlock[] = []
+
+  const appendTextBlock = (
+    kind: Extract<AssistantBlock, { readonly kind: "assistant" | "thinking" }>['kind'],
+    text: string,
+    index: number,
+  ) => {
+    if (text.length === 0) {
+      return
+    }
+
+    const previous = blocks.at(-1)
+    if (previous && previous.kind === kind) {
+      blocks[blocks.length - 1] = {
+        ...previous,
+        text: `${previous.text}${text}`,
+        sourceIndices: [...previous.sourceIndices, index],
+      }
+      return
+    }
+
+    blocks.push({
+      kind,
+      uuid: transcriptMessageUuid(kind, messageUuid, index),
+      text,
+      sourceIndices: [index],
     })
   }
 
-  return [...merged.values()]
+  for (const [index, block] of content.entries()) {
+    if (typeof block === "string") {
+      appendTextBlock("assistant", block, index)
+      continue
+    }
+
+    if (!isRecord(block)) {
+      continue
+    }
+
+    const type = block["type"]
+
+    if (type === "text" && typeof block["text"] === "string" && block["text"].length > 0) {
+      appendTextBlock("assistant", block["text"], index)
+      continue
+    }
+
+    if (
+      type === "thinking" &&
+      typeof block["thinking"] === "string" &&
+      block["thinking"].length > 0
+    ) {
+      appendTextBlock("thinking", block["thinking"], index)
+      continue
+    }
+
+    if (
+      (type === "tool_use" || type === "server_tool_use") &&
+      typeof block["id"] === "string" &&
+      typeof block["name"] === "string"
+    ) {
+      blocks.push({
+        kind: "tool_call",
+        uuid: toolCallMessageUuid(block["id"]),
+        toolCall: {
+          id: block["id"],
+          name: block["name"],
+          input: isRecord(block["input"]) ? block["input"] : {},
+          status: options.defaultToolStatus,
+          output: null,
+          elapsedSeconds: null,
+        },
+      })
+    }
+  }
+
+  return blocks
+}
+
+function extractTextContent(message: unknown): string {
+  if (!isRecord(message)) {
+    return ""
+  }
+
+  const content = message["content"]
+  if (typeof content === "string") {
+    return content
+  }
+
+  if (!Array.isArray(content)) {
+    return ""
+  }
+
+  return content
+    .flatMap((block) => {
+      if (typeof block === "string") {
+        return [block]
+      }
+
+      if (isRecord(block) && typeof block["text"] === "string") {
+        return [block["text"]]
+      }
+
+      return []
+    })
+    .join("")
+}
+
+function transcriptMessageUuid(
+  kind: StreamingBlockKind,
+  messageUuid: string,
+  blockIndex: number,
+): MessageUUID {
+  return MessageUUID(`${kind}:${messageUuid}:${blockIndex}`)
+}
+
+function toolCallMessageUuid(toolUseId: string): MessageUUID {
+  return MessageUUID(`tool:${toolUseId}`)
+}
+
+function getStreamingBlockKey(messageUuid: string, blockIndex: number): string {
+  return `${messageUuid}:${blockIndex}`
 }
 
 function mergeTaskStarted(
@@ -998,13 +1652,6 @@ function taskUsageFromSDK(
     toolUses: usage.tool_uses,
     durationMs: usage.duration_ms,
   }
-}
-
-function finalizeToolCalls(toolCalls: readonly ToolCall[]): ToolCall[] {
-  return toolCalls.map((toolCall) => ({
-    ...toolCall,
-    status: toolCall.status === "error" ? "error" : "completed" as const,
-  }))
 }
 
 function isFinalTaskStatus(status: SpawnedTask["status"]): boolean {

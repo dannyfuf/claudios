@@ -80,6 +80,14 @@ export function MessageUUID(raw: string): MessageUUID {
 
 export type ToolCallStatus = "running" | "completed" | "error"
 
+export type ToolCallFileChangeType = "added" | "modified"
+
+export type ToolCallFileChange = {
+  readonly filePath: string
+  readonly patch: string
+  readonly changeType: ToolCallFileChangeType
+}
+
 export type ToolCall = {
   readonly id: string
   readonly name: string
@@ -87,6 +95,7 @@ export type ToolCall = {
   readonly status: ToolCallStatus
   readonly output: string | null
   readonly elapsedSeconds: number | null
+  readonly fileChange?: ToolCallFileChange
 }
 
 // ---------------------------------------------------------------------------

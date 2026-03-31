@@ -32,9 +32,16 @@ export type InteractionMode = "plain" | VimMode
 export type DisplayMessage =
   | UserDisplayMessage
   | AssistantDisplayMessage
+  | ThinkingDisplayMessage
+  | ToolCallDisplayMessage
   | SystemDisplayMessage
   | TaskDisplayMessage
   | ErrorDisplayMessage
+
+type MessageScope = {
+  readonly taskId: string | null
+  readonly parentToolUseId: string | null
+}
 
 export type UserDisplayMessage = {
   readonly kind: "user"
@@ -43,12 +50,26 @@ export type UserDisplayMessage = {
   readonly timestamp: Date
 }
 
-export type AssistantDisplayMessage = {
+export type AssistantDisplayMessage = MessageScope & {
   readonly kind: "assistant"
   readonly uuid: MessageUUID
   readonly text: string
-  readonly toolCalls: readonly ToolCall[]
   readonly isStreaming: boolean
+  readonly timestamp: Date
+}
+
+export type ThinkingDisplayMessage = MessageScope & {
+  readonly kind: "thinking"
+  readonly uuid: MessageUUID
+  readonly text: string
+  readonly isStreaming: boolean
+  readonly timestamp: Date
+}
+
+export type ToolCallDisplayMessage = MessageScope & {
+  readonly kind: "tool_call"
+  readonly uuid: MessageUUID
+  readonly toolCall: ToolCall
   readonly timestamp: Date
 }
 
@@ -106,7 +127,6 @@ export type ConversationState = {
   readonly startup: StartupState
   readonly messages: readonly DisplayMessage[]
   readonly promptText: string
-  readonly streamingText: string
   readonly model: string
   readonly permissionMode: string
   readonly themeName: ThemeName
@@ -131,7 +151,6 @@ export const initialConversationState: ConversationState = {
   },
   messages: [],
   promptText: "",
-  streamingText: "",
   model: "sonnet",
   permissionMode: "default",
   themeName: DEFAULT_THEME_NAME,
@@ -172,14 +191,14 @@ export type ConversationAction =
       readonly timestamp: Date
     }
   | { readonly type: "set_prompt_text"; readonly text: string }
-  | { readonly type: "update_streaming_text"; readonly text: string }
+  | { readonly type: "update_message_text"; readonly uuid: MessageUUID; readonly text: string }
   | {
-      readonly type: "finalize_assistant_message"
-      readonly uuid: MessageUUID
-      readonly text: string
-      readonly toolCalls: readonly ToolCall[]
+      readonly type: "upsert_tool_call_message"
+      readonly toolCall: ToolCall
+      readonly timestamp: Date
+      readonly taskId: string | null
+      readonly parentToolUseId: string | null
     }
-  | { readonly type: "update_tool_call"; readonly messageUuid: MessageUUID; readonly toolCall: ToolCall }
   | { readonly type: "set_model"; readonly model: string }
   | { readonly type: "set_permission_mode"; readonly mode: string }
   | { readonly type: "set_theme"; readonly themeName: ThemeName }
@@ -258,30 +277,50 @@ export function conversationReducer(
     case "set_prompt_text":
       return { ...state, promptText: action.text }
 
-    case "update_streaming_text":
-      return { ...state, streamingText: action.text }
-
-    case "finalize_assistant_message": {
+    case "update_message_text": {
       const updated = state.messages.map((msg) =>
-        msg.kind === "assistant" && msg.uuid === action.uuid
-          ? { ...msg, text: action.text, toolCalls: action.toolCalls, isStreaming: false }
+        (msg.kind === "assistant" || msg.kind === "thinking") && msg.uuid === action.uuid
+          ? { ...msg, text: action.text }
           : msg,
       )
-      return { ...state, messages: updated, streamingText: "" }
+      return { ...state, messages: updated }
     }
 
-    case "update_tool_call": {
-      const updated = state.messages.map((msg) => {
-        if (msg.kind !== "assistant" || msg.uuid !== action.messageUuid) return msg
-        const existingIndex = msg.toolCalls.findIndex((tc) => tc.id === action.toolCall.id)
-        const toolCalls =
-          existingIndex === -1
-            ? [...msg.toolCalls, action.toolCall]
-            : msg.toolCalls.map((tc) =>
-                tc.id === action.toolCall.id ? action.toolCall : tc,
-              )
-        return { ...msg, toolCalls }
+    case "upsert_tool_call_message": {
+      const existingIndex = state.messages.findIndex(
+        (message) => message.kind === "tool_call" && message.toolCall.id === action.toolCall.id,
+      )
+
+      if (existingIndex === -1) {
+        return {
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              kind: "tool_call",
+              uuid: MessageUUID(`tool:${action.toolCall.id}`),
+              toolCall: action.toolCall,
+              taskId: action.taskId,
+              parentToolUseId: action.parentToolUseId,
+              timestamp: action.timestamp,
+            },
+          ],
+        }
+      }
+
+      const updated = state.messages.map((message, index) => {
+        if (index !== existingIndex || message.kind !== "tool_call") {
+          return message
+        }
+
+        return {
+          ...message,
+          toolCall: mergeToolCall(message.toolCall, action.toolCall),
+          taskId: action.taskId ?? message.taskId,
+          parentToolUseId: action.parentToolUseId ?? message.parentToolUseId,
+        }
       })
+
       return { ...state, messages: updated }
     }
 
@@ -326,7 +365,6 @@ export function conversationReducer(
       return {
         ...state,
         messages: [],
-        streamingText: "",
         totalCostUsd: 0,
         totalTokens: 0,
       }
@@ -342,11 +380,39 @@ export function conversationReducer(
 
     case "set_message_streaming": {
       const updated = state.messages.map((msg) =>
-        msg.kind === "assistant" && msg.uuid === action.uuid
+        (msg.kind === "assistant" || msg.kind === "thinking") && msg.uuid === action.uuid
           ? { ...msg, isStreaming: action.isStreaming }
           : msg,
       )
       return { ...state, messages: updated }
     }
   }
+}
+
+function mergeToolCall(existing: ToolCall, incoming: ToolCall): ToolCall {
+  const hasIncomingInput = Object.keys(incoming.input).length > 0
+
+  return {
+    ...existing,
+    ...incoming,
+    input: hasIncomingInput ? incoming.input : existing.input,
+    output: incoming.output ?? existing.output,
+    elapsedSeconds: incoming.elapsedSeconds ?? existing.elapsedSeconds,
+    status: mergeToolCallStatus(existing.status, incoming.status),
+  }
+}
+
+function mergeToolCallStatus(
+  existing: ToolCall["status"],
+  incoming: ToolCall["status"],
+): ToolCall["status"] {
+  if (incoming === "error" || incoming === "completed") {
+    return incoming
+  }
+
+  if (existing === "error" || existing === "completed") {
+    return existing
+  }
+
+  return incoming
 }

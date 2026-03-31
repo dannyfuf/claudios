@@ -1,15 +1,17 @@
 import { describe, expect, it } from "bun:test"
 import { MessageUUID, type SpawnedTask, type ToolCall } from "#sdk/types"
-import type { DisplayMessage } from "#state/types"
+import type { DisplayMessage, ThinkingDisplayMessage } from "#state/types"
 import {
   formatTaskKindLabel,
+  getToolCallDiffFileChange,
+  getTaskContextLabel,
   formatTaskUsage,
   getMessageLayout,
   getTaskDetailLine,
   getTaskStatusPresentation,
   getToolBriefDetail,
   getToolStatusPresentation,
-  getVisibleToolCalls,
+  mergeConsecutiveThinkingMessages,
   normalizeToolLabel,
   shouldShowAssistantResponseDivider,
 } from "#ui/components/MessageArea.logic"
@@ -24,15 +26,18 @@ describe("shouldShowAssistantResponseDivider", () => {
     expect(shouldShowAssistantResponseDivider(messages, 1)).toBe(true)
   })
 
-  it("ignores system and error rows between conversational turns", () => {
+  it("ignores thinking, tool, task, system, and error rows between conversational turns", () => {
     const messages = [
       createUserMessage("u-1"),
+      createThinkingMessage("t-1"),
+      createToolCallMessage("tool-1", "Read"),
+      createTaskMessage("task-1"),
       createSystemMessage("s-1"),
       createErrorMessage("e-1"),
       createAssistantMessage("a-1"),
     ] satisfies readonly DisplayMessage[]
 
-    expect(shouldShowAssistantResponseDivider(messages, 3)).toBe(true)
+    expect(shouldShowAssistantResponseDivider(messages, 6)).toBe(true)
   })
 
   it("does not show a divider between consecutive assistant rows", () => {
@@ -46,33 +51,32 @@ describe("shouldShowAssistantResponseDivider", () => {
   })
 })
 
-describe("getVisibleToolCalls", () => {
-  it("returns the newest rows when collapsed", () => {
-    const toolCalls = [
-      createToolCall("1", "Read"),
-      createToolCall("2", "Grep"),
-      createToolCall("3", "Write"),
-      createToolCall("4", "Bash"),
-    ]
+describe("mergeConsecutiveThinkingMessages", () => {
+  it("folds adjacent thinking rows into a single display row", () => {
+    const messages = [
+      createThinkingMessage("t-1", "Plan the change"),
+      createThinkingMessage("t-2", "Check the message renderer"),
+      createAssistantMessage("a-1"),
+    ] satisfies readonly DisplayMessage[]
 
-    const result = getVisibleToolCalls(toolCalls, false, 2)
-
-    expect(result.visibleToolCalls.map((toolCall) => toolCall.id)).toEqual(["3", "4"])
-    expect(result.hiddenCount).toBe(2)
-    expect(result.hasOverflow).toBe(true)
+    expect(mergeConsecutiveThinkingMessages(messages)).toEqual([
+      {
+        ...createThinkingMessage("t-1", "Plan the change"),
+        text: "Plan the change\nCheck the message renderer",
+        timestamp: new Date("2026-03-30T10:00:01Z"),
+      },
+      createAssistantMessage("a-1"),
+    ])
   })
 
-  it("returns all rows when expanded", () => {
-    const toolCalls = [
-      createToolCall("1", "Read"),
-      createToolCall("2", "Write"),
-    ]
+  it("stops merging once a non-thinking row appears", () => {
+    const messages = [
+      createThinkingMessage("t-1", "Plan the change"),
+      createToolCallMessage("tool-1", "Read"),
+      createThinkingMessage("t-2", "Check the message renderer"),
+    ] satisfies readonly DisplayMessage[]
 
-    const result = getVisibleToolCalls(toolCalls, true, 1)
-
-    expect(result.visibleToolCalls).toEqual(toolCalls)
-    expect(result.hiddenCount).toBe(0)
-    expect(result.hasOverflow).toBe(true)
+    expect(mergeConsecutiveThinkingMessages(messages)).toEqual(messages)
   })
 })
 
@@ -114,6 +118,34 @@ describe("tool previews", () => {
     })
 
     expect(detail).toBe("line one line two")
+  })
+
+  it("only exposes inline diffs for completed tool rows", () => {
+    expect(
+      getToolCallDiffFileChange({
+        status: "completed",
+        fileChange: {
+          filePath: "/tmp/example.ts",
+          changeType: "modified",
+          patch: "--- /tmp/example.ts\n+++ /tmp/example.ts\n",
+        },
+      }),
+    ).toEqual({
+      filePath: "/tmp/example.ts",
+      changeType: "modified",
+      patch: "--- /tmp/example.ts\n+++ /tmp/example.ts\n",
+    })
+
+    expect(
+      getToolCallDiffFileChange({
+        status: "running",
+        fileChange: {
+          filePath: "/tmp/example.ts",
+          changeType: "modified",
+          patch: "--- /tmp/example.ts\n+++ /tmp/example.ts\n",
+        },
+      }),
+    ).toBeNull()
   })
 
   it("maps task statuses to deterministic task activity presentation", () => {
@@ -162,6 +194,17 @@ describe("tool previews", () => {
         }),
       ),
     ).toBe("using Read")
+  })
+
+  it("formats a short task context label for scoped tool rows", () => {
+    expect(
+      getTaskContextLabel(
+        createTask({
+          taskType: "local_agent",
+          description: "Inspect command routing and picker behavior",
+        }),
+      ),
+    ).toBe("subagent: Inspect command routing and picker behavior")
   })
 
   it("formats task usage into a compact metadata line", () => {
@@ -221,9 +264,33 @@ function createAssistantMessage(id: string): DisplayMessage {
     kind: "assistant",
     uuid: MessageUUID(id),
     text: "response",
-    toolCalls: [],
     isStreaming: false,
     timestamp: new Date("2026-03-30T10:00:01Z"),
+    taskId: null,
+    parentToolUseId: null,
+  }
+}
+
+function createThinkingMessage(id: string, text = "internal reasoning"): ThinkingDisplayMessage {
+  return {
+    kind: "thinking",
+    uuid: MessageUUID(id),
+    text,
+    isStreaming: false,
+    timestamp: new Date("2026-03-30T10:00:01Z"),
+    taskId: null,
+    parentToolUseId: null,
+  }
+}
+
+function createToolCallMessage(id: string, name: string): DisplayMessage {
+  return {
+    kind: "tool_call",
+    uuid: MessageUUID(`tool:${id}`),
+    toolCall: createToolCall(id, name),
+    timestamp: new Date("2026-03-30T10:00:01Z"),
+    taskId: null,
+    parentToolUseId: null,
   }
 }
 
@@ -242,6 +309,15 @@ function createErrorMessage(id: string): DisplayMessage {
     uuid: MessageUUID(id),
     text: "boom",
     recoverable: true,
+    timestamp: new Date("2026-03-30T10:00:03Z"),
+  }
+}
+
+function createTaskMessage(id: string): DisplayMessage {
+  return {
+    kind: "task",
+    uuid: MessageUUID(`task:${id}`),
+    task: createTask({ id, description: "Inspect repository" }),
     timestamp: new Date("2026-03-30T10:00:03Z"),
   }
 }

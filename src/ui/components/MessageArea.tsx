@@ -5,19 +5,16 @@
  * system messages, spawned task activity, and error blocks.
  */
 
-import {
-  useMemo,
-  useState,
-  type RefObject,
-} from "react"
+import { useMemo, type RefObject } from "react"
 import { ScrollBoxRenderable, SyntaxStyle } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
-import type { ToolCall } from "#sdk/types"
 import { useConversationState, useThemePalette } from "#ui/hooks"
 import type {
   DisplayMessage,
   UserDisplayMessage,
   AssistantDisplayMessage,
+  ThinkingDisplayMessage,
+  ToolCallDisplayMessage,
   SystemDisplayMessage,
   TaskDisplayMessage,
   ErrorDisplayMessage,
@@ -25,13 +22,15 @@ import type {
 } from "#state/types"
 import {
   formatTaskKindLabel,
+  getToolCallDiffFileChange,
+  getTaskContextLabel,
   formatTaskUsage,
   getMessageLayout,
   getTaskDetailLine,
   getTaskStatusPresentation,
   getToolBriefDetail,
   getToolStatusPresentation,
-  getVisibleToolCalls,
+  mergeConsecutiveThinkingMessages,
   normalizeToolLabel,
   shouldShowAssistantResponseDivider,
   type StatusTone,
@@ -47,32 +46,111 @@ export function MessageArea(props: MessageAreaProps) {
   const theme = useThemePalette()
   const state = useConversationState()
   const { width } = useTerminalDimensions()
-  const { messages, startup, streamingText } = state
+  const { messages, startup, showThinking, diffMode } = state
   const layout = useMemo(() => getMessageLayout(width), [width])
+  const activeTaskToolCallsByTaskId = useMemo(() => {
+    const next = new Map<string, ToolCallDisplayMessage["toolCall"][]>()
+
+    for (const message of messages) {
+      if (
+        message.kind !== "tool_call" ||
+        message.taskId === null ||
+        message.toolCall.status !== "running"
+      ) {
+        continue
+      }
+
+      const current = next.get(message.taskId) ?? []
+      next.set(message.taskId, [...current, message.toolCall].slice(-2))
+    }
+
+    return next
+  }, [messages])
+  const taskOwnedToolUseIds = useMemo(() => {
+    const next = new Set<string>()
+
+    for (const message of messages) {
+      if (message.kind === "task" && message.task.toolUseId) {
+        next.add(message.task.toolUseId)
+      }
+    }
+
+    return next
+  }, [messages])
+  const visibleMessages = useMemo(
+    () =>
+      mergeConsecutiveThinkingMessages(
+        messages.filter((message) => {
+          if (!showThinking && message.kind === "thinking") {
+            return false
+          }
+
+          if (
+            message.kind === "tool_call" &&
+            (
+              message.taskId !== null ||
+              message.parentToolUseId !== null ||
+              taskOwnedToolUseIds.has(message.toolCall.id)
+            )
+          ) {
+            return false
+          }
+
+          return true
+        }),
+      ),
+    [messages, showThinking, taskOwnedToolUseIds],
+  )
+  const taskMessagesById = useMemo(() => {
+    const next = new Map<string, TaskDisplayMessage>()
+
+    for (const message of messages) {
+      if (message.kind === "task") {
+        next.set(message.task.id, message)
+      }
+    }
+
+    return next
+  }, [messages])
+  const taskMessagesByToolUseId = useMemo(() => {
+    const next = new Map<string, TaskDisplayMessage>()
+
+    for (const message of messages) {
+      if (message.kind === "task" && message.task.toolUseId) {
+        next.set(message.task.toolUseId, message)
+      }
+    }
+
+    return next
+  }, [messages])
 
   // Create a shared SyntaxStyle for all markdown blocks.
   const syntaxStyle = useMemo(() => SyntaxStyle.create(), [])
 
   return (
     <scrollbox ref={props.scrollRef} height="100%" stickyScroll stickyStart="bottom">
-      {messages.length === 0 && !streamingText ? (
+      {messages.length === 0 ? (
         <EmptyState layout={layout} startup={startup} theme={theme} />
       ) : (
-        messages.map((msg, i) => {
-          const currentStreamingText =
-            msg.kind === "assistant" && msg.isStreaming ? streamingText : null
+        visibleMessages.map((msg, i) => {
           const showAssistantResponseDivider =
-            msg.kind === "assistant" && shouldShowAssistantResponseDivider(messages, i)
+            msg.kind === "assistant" && shouldShowAssistantResponseDivider(visibleMessages, i)
 
           return (
             <MessageBlock
               key={msg.uuid ?? String(i)}
               message={msg}
-              streamingText={currentStreamingText}
               syntaxStyle={syntaxStyle}
               theme={theme}
               layout={layout}
+              taskContextLabel={resolveTaskContextLabel(
+                msg,
+                taskMessagesById,
+                taskMessagesByToolUseId,
+              )}
+              activeTaskToolCalls={activeTaskToolCallsByTaskId}
               showAssistantResponseDivider={showAssistantResponseDivider}
+              diffMode={diffMode}
             />
           )
         })
@@ -209,20 +287,42 @@ function getEmptyStateContent(
   }
 }
 
+function resolveTaskContextLabel(
+  message: DisplayMessage,
+  taskMessagesById: ReadonlyMap<string, TaskDisplayMessage>,
+  taskMessagesByToolUseId: ReadonlyMap<string, TaskDisplayMessage>,
+): string | null {
+  if (message.kind !== "thinking" && message.kind !== "tool_call") {
+    return null
+  }
+
+  const taskMessage = message.taskId
+    ? taskMessagesById.get(message.taskId) ?? null
+    : message.parentToolUseId
+      ? taskMessagesByToolUseId.get(message.parentToolUseId) ?? null
+      : null
+
+  return taskMessage ? getTaskContextLabel(taskMessage.task) : null
+}
+
 function MessageBlock({
   message,
-  streamingText,
   syntaxStyle,
   theme,
   layout,
+  taskContextLabel,
+  activeTaskToolCalls,
   showAssistantResponseDivider,
+  diffMode,
 }: {
   message: DisplayMessage
-  streamingText: string | null
   syntaxStyle: SyntaxStyle
   theme: ReturnType<typeof useThemePalette>
   layout: MessageLayout
+  taskContextLabel: string | null
+  activeTaskToolCalls: ReadonlyMap<string, readonly ToolCallDisplayMessage["toolCall"][]>
   showAssistantResponseDivider: boolean
+  diffMode: "unified" | "split"
 }) {
   switch (message.kind) {
     case "user":
@@ -231,17 +331,43 @@ function MessageBlock({
       return (
         <AssistantMessage
           message={message}
-          streamingText={streamingText}
           syntaxStyle={syntaxStyle}
           theme={theme}
           layout={layout}
           showAssistantResponseDivider={showAssistantResponseDivider}
         />
       )
+    case "thinking":
+      return (
+        <ThinkingMessage
+          message={message}
+          theme={theme}
+          layout={layout}
+          taskContextLabel={taskContextLabel}
+        />
+      )
+    case "tool_call":
+      return (
+        <ToolCallMessage
+          message={message}
+          syntaxStyle={syntaxStyle}
+          theme={theme}
+          layout={layout}
+          taskContextLabel={taskContextLabel}
+          diffMode={diffMode}
+        />
+      )
     case "system":
       return <SystemMessage message={message} theme={theme} layout={layout} />
     case "task":
-      return <TaskMessage message={message} theme={theme} layout={layout} />
+      return (
+        <TaskMessage
+          message={message}
+          theme={theme}
+          layout={layout}
+          activeToolCalls={activeTaskToolCalls.get(message.task.id) ?? []}
+        />
+      )
     case "error":
       return <ErrorMessage message={message} theme={theme} layout={layout} />
   }
@@ -291,22 +417,18 @@ function UserMessage({
 
 function AssistantMessage({
   message,
-  streamingText,
   syntaxStyle,
   theme,
   layout,
   showAssistantResponseDivider,
 }: {
   message: AssistantDisplayMessage
-  streamingText: string | null
   syntaxStyle: SyntaxStyle
   theme: ReturnType<typeof useThemePalette>
   layout: MessageLayout
   showAssistantResponseDivider: boolean
 }) {
-  const content = streamingText ?? message.text
-  const hasText = content.trim().length > 0
-  const hasTools = message.toolCalls.length > 0
+  const hasText = message.text.trim().length > 0
 
   return (
     <box
@@ -322,19 +444,10 @@ function AssistantMessage({
         {showAssistantResponseDivider ? (
           <AssistantResponseDivider theme={theme} compact={layout.compact} />
         ) : null}
-        {hasTools ? (
-          <box>
-            <ToolActivityBlock
-              toolCalls={message.toolCalls}
-              theme={theme}
-              compact={layout.compact}
-            />
-          </box>
-        ) : null}
         {hasText ? (
-          <box marginTop={hasTools ? 1 : 0} paddingX={layout.compact ? 0 : 1}>
+          <box paddingX={layout.compact ? 0 : 1}>
             <markdown
-              content={content}
+              content={message.text}
               streaming={message.isStreaming}
               syntaxStyle={syntaxStyle}
             />
@@ -344,7 +457,7 @@ function AssistantMessage({
           <box
             flexDirection="row"
             gap={1}
-            marginTop={hasText || hasTools ? 1 : 0}
+            marginTop={hasText ? 1 : 0}
             paddingX={layout.compact ? 0 : 1}
           >
             <text>
@@ -367,6 +480,71 @@ function AssistantMessage({
   )
 }
 
+function ThinkingMessage({
+  message,
+  theme,
+  layout,
+  taskContextLabel,
+}: {
+  message: ThinkingDisplayMessage
+  theme: ReturnType<typeof useThemePalette>
+  layout: MessageLayout
+  taskContextLabel: string | null
+}) {
+  const thinkingLines = message.text.split("\n")
+
+  return (
+    <box
+      paddingX={layout.horizontalPadding}
+      marginBottom={layout.compact ? 1 : 2}
+      alignItems="center"
+    >
+      <box
+        width="100%"
+        maxWidth={layout.columnWidth}
+        flexDirection="column"
+        border
+        borderStyle="rounded"
+        borderColor={theme.borderSubtle}
+        paddingX={1}
+        paddingY={0}
+      >
+        <box flexDirection="row" justifyContent="space-between" gap={1} marginBottom={layout.metaGapBottom}>
+          <box flexDirection="row" gap={1} minWidth={0}>
+            <text>
+              <span fg={theme.mutedText}>thinking</span>
+            </text>
+            {taskContextLabel ? (
+              <text>
+                <span fg={theme.mutedText}>{taskContextLabel}</span>
+              </text>
+            ) : null}
+          </box>
+          <box flexDirection="row" gap={1}>
+            <text>
+              <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
+            </text>
+            {message.isStreaming ? (
+              <text>
+                <span fg={theme.mutedText}>{layout.compact ? "live" : "streaming"}</span>
+              </text>
+            ) : null}
+          </box>
+        </box>
+        <box paddingLeft={layout.compact ? 1 : 2} flexDirection="column">
+          {thinkingLines.map((line, index) => (
+            <text key={`${message.uuid}:${index}`}>
+              <span fg={theme.mutedText}>
+                <em>{line}</em>
+              </span>
+            </text>
+          ))}
+        </box>
+      </box>
+    </box>
+  )
+}
+
 function AssistantResponseDivider({
   theme,
   compact,
@@ -383,85 +561,75 @@ function AssistantResponseDivider({
   )
 }
 
-/**
- * Visible block showing compact one-line rows for each tool call.
- * Overflow is collapsible so long work logs stay readable.
- */
-function ToolActivityBlock({
-  toolCalls,
+function ToolCallMessage({
+  message,
+  syntaxStyle,
   theme,
-  compact,
+  layout,
+  taskContextLabel,
+  diffMode,
 }: {
-  toolCalls: readonly ToolCall[]
+  message: ToolCallDisplayMessage
+  syntaxStyle: SyntaxStyle
   theme: ReturnType<typeof useThemePalette>
-  compact: boolean
+  layout: MessageLayout
+  taskContextLabel: string | null
+  diffMode: "unified" | "split"
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const maxVisible = compact ? 3 : 4
-  const { visibleToolCalls, hiddenCount, hasOverflow } = getVisibleToolCalls(
-    toolCalls,
-    expanded,
-    maxVisible,
-  )
-  const runningCount = toolCalls.filter((tc) => tc.status === "running").length
-  const completedCount = toolCalls.filter((tc) => tc.status === "completed").length
-  const errorCount = toolCalls.length - runningCount - completedCount
-
-  const summaryParts: string[] = []
-  if (runningCount > 0) summaryParts.push(`${runningCount} running`)
-  if (completedCount > 0) summaryParts.push(`${completedCount} done`)
-  if (errorCount > 0) summaryParts.push(`${errorCount} failed`)
-
-  const showHeader = toolCalls.length > 1
-  const headerSummary = `${toolCalls.length} step${toolCalls.length !== 1 ? "s" : ""}${
-    !compact && summaryParts.length > 0 ? `, ${summaryParts.join(", ")}` : ""
-  }`
+  const fileChange = getToolCallDiffFileChange(message.toolCall)
 
   return (
     <box
-      flexDirection="column"
-      border
-      borderStyle="rounded"
-      borderColor={theme.borderSubtle}
-      backgroundColor={theme.toolSurface}
-      paddingX={1}
-      paddingY={compact ? 0 : 1}
+      paddingX={layout.horizontalPadding}
+      marginBottom={layout.compact ? 1 : 2}
+      alignItems="center"
     >
-      {showHeader ? (
-        <box flexDirection="row" justifyContent="space-between" gap={1} marginBottom={compact ? 0 : 1}>
-          <text>
-            <span fg={theme.mutedText}>work log</span>
-          </text>
-          <text>
-            <span fg={theme.mutedText}>{headerSummary}</span>
-          </text>
-        </box>
-      ) : null}
-      <box flexDirection="column">
-        {visibleToolCalls.map((toolCall) => (
-          <CompactToolRow
-            key={toolCall.id}
-            toolCall={toolCall}
-            theme={theme}
-          />
-        ))}
-      </box>
-      {hasOverflow ? (
-        <box marginTop={compact ? 0 : 1} flexDirection="row" justifyContent="space-between" gap={1}>
-          <text>
-            <span fg={theme.mutedText}>
-              {expanded
-                ? `showing all ${toolCalls.length} steps`
-                : `${hiddenCount} earlier step${hiddenCount !== 1 ? "s" : ""} hidden`}
-            </span>
-          </text>
-          <box onMouseDown={() => setExpanded((current) => !current)}>
+      <box
+        width="100%"
+        maxWidth={layout.columnWidth}
+        flexDirection="column"
+        border
+        borderStyle="rounded"
+        borderColor={theme.borderSubtle}
+        backgroundColor={theme.toolSurface}
+        paddingX={1}
+        paddingY={layout.sectionPaddingY}
+      >
+        <box flexDirection="row" justifyContent="space-between" gap={1} marginBottom={layout.metaGapBottom}>
+          <box flexDirection="row" gap={1} minWidth={0}>
             <text>
-              <span fg={theme.primary}>{expanded ? "show less" : "show more"}</span>
+              <span fg={theme.mutedText}>tool</span>
             </text>
+            {taskContextLabel ? (
+              <text>
+                <span fg={theme.mutedText}>{taskContextLabel}</span>
+              </text>
+            ) : null}
           </box>
+          <text>
+            <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
+          </text>
         </box>
-      ) : null}
+        <CompactToolRow toolCall={message.toolCall} theme={theme} />
+        {fileChange ? (
+          <box marginTop={1} flexDirection="column">
+            <text>
+              <span fg={theme.mutedText}>
+                {fileChange.changeType === "added" ? "created" : "modified"} {fileChange.filePath}
+              </span>
+            </text>
+            <box marginTop={1} width="100%">
+              <diff
+                diff={fileChange.patch}
+                view={diffMode}
+                showLineNumbers={true}
+                syntaxStyle={syntaxStyle}
+                wrapMode="none"
+              />
+            </box>
+          </box>
+        ) : null}
+      </box>
     </box>
   )
 }
@@ -473,7 +641,7 @@ function CompactToolRow({
   toolCall,
   theme,
 }: {
-  toolCall: ToolCall
+  toolCall: ToolCallDisplayMessage["toolCall"]
   theme: ReturnType<typeof useThemePalette>
 }) {
   const statusPresentation = getToolStatusPresentation(toolCall.status)
@@ -549,16 +717,19 @@ function TaskMessage({
   message,
   theme,
   layout,
+  activeToolCalls,
 }: {
   message: TaskDisplayMessage
   theme: ReturnType<typeof useThemePalette>
   layout: MessageLayout
+  activeToolCalls: readonly ToolCallDisplayMessage["toolCall"][]
 }) {
   const statusPresentation = getTaskStatusPresentation(message.task.status)
   const statusColor = getStatusToneColor(statusPresentation.tone, theme)
   const kindLabel = formatTaskKindLabel(message.task)
   const detailLine = getTaskDetailLine(message.task)
   const usageLine = formatTaskUsage(message.task.usage)
+  const visibleActiveToolCalls = message.task.status === "running" ? activeToolCalls : []
 
   return (
     <box
@@ -611,8 +782,18 @@ function TaskMessage({
             </text>
           </box>
         ) : null}
+        {visibleActiveToolCalls.length > 0 ? (
+          <box marginTop={1} flexDirection="column">
+            <text>
+              <span fg={theme.mutedText}>live tools</span>
+            </text>
+            {visibleActiveToolCalls.map((toolCall) => (
+              <CompactToolRow key={toolCall.id} toolCall={toolCall} theme={theme} />
+            ))}
+          </box>
+        ) : null}
         {usageLine ? (
-          <box marginTop={detailLine ? 0 : 1}>
+          <box marginTop={detailLine || visibleActiveToolCalls.length > 0 ? 1 : 1}>
             <text>
               <span fg={theme.mutedText}>{usageLine}</span>
             </text>

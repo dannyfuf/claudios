@@ -21,6 +21,7 @@
   - [Manual / from source](#manual--from-source)
 - [First run](#first-run)
 - [Usage](#usage)
+- [Uninstalling](#uninstalling)
 - [Slash commands](#slash-commands)
 - [Keybindings](#keybindings)
 - [Configuration](#configuration)
@@ -157,6 +158,31 @@ bclaud config
 # Help & version
 bclaud --help
 bclaud --version
+```
+
+---
+
+## Uninstalling
+
+```sh
+claudios --uninstall
+```
+
+This will show what will be removed and prompt for confirmation before deleting anything:
+
+```
+The following will be removed:
+  ✓ CLI symlink (~/.local/bin/claudios)
+  ✓ App files (~/.local/share/claudios)
+  ✓ Config (~/.config/claudios)
+
+Proceed with uninstall? [y/N]
+```
+
+You can also run it as a subcommand:
+
+```sh
+claudios uninstall
 ```
 
 ---
@@ -389,7 +415,8 @@ Please [open an issue](https://github.com/dannyfuf/claudios/issues) with:
 | Symptom | Solution |
 |---|---|
 | `bclaud: command not found` | Add `~/.local/bin` to `$PATH`: `export PATH="$HOME/.local/bin:$PATH"` |
-| `Claude Code authentication required` | Run `claude auth login`, then retry |
+| `Claude Code authentication required` after install | The installer writes `claudePath` to `~/.config/claudios/config.json`. If missing, run `which claude` and add `"claudePath": "/path/to/claude"` to that file |
+| `Claude Code authentication required` (fresh setup) | Run `claude auth login`, then retry |
 | `ANTHROPIC_API_KEY not set` | Export the key: `export ANTHROPIC_API_KEY="sk-ant-..."` |
 | Claude Code CLI not found | Install from [claude.ai/download](https://claude.ai/download) |
 | TUI renders incorrectly / garbled | Use a true-color terminal. Try setting `TERM=xterm-256color` |

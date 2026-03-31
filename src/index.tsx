@@ -41,6 +41,7 @@ type CLIArgs =
     }
   | { command: "help" }
   | { command: "version" }
+  | { command: "uninstall" }
   | { command: "sessions.list" }
   | { command: "sessions.show"; sessionId: string | null }
   | { command: "config" }
@@ -81,6 +82,9 @@ function parseArgs(argv: string[]): CLIArgs {
       case "-v":
       case "version":
         return { command: "version" }
+      case "--uninstall":
+      case "uninstall":
+        return { command: "uninstall" }
       case "--resume":
         result.resume = args[++i] ?? null
         break
@@ -115,6 +119,7 @@ Commands:
   sessions list          List saved sessions
   sessions show <id>     Show a session transcript
   config                 Show resolved config
+  uninstall              Remove claudios from your system
   help                   Show this help
 
 Flags:
@@ -122,6 +127,7 @@ Flags:
   --model <model>        Override default model
   --permission-mode <m>  Set permission mode
   --cwd <path>           Set working directory
+  --uninstall            Remove claudios from your system
   -h, --help             Show help
   -v, --version          Show version
 `)
@@ -129,6 +135,70 @@ Flags:
 
 function printVersion(): void {
   console.log("claudios v0.1.0")
+}
+
+async function runUninstall(): Promise<void> {
+  const { existsSync } = await import("node:fs")
+  const { rm } = await import("node:fs/promises")
+  const { homedir } = await import("node:os")
+  const { join } = await import("node:path")
+
+  const home = homedir()
+  const targets = [
+    { path: join(home, ".local", "bin", "claudios"), label: "CLI symlink (~/.local/bin/claudios)" },
+    { path: join(home, ".local", "share", "claudios"), label: "App files (~/.local/share/claudios)" },
+    { path: join(home, ".config", "claudios"), label: "Config (~/.config/claudios)" },
+  ]
+
+  console.log("The following will be removed:")
+  for (const t of targets) {
+    const exists = existsSync(t.path)
+    console.log(`  ${exists ? "✓" : "–"} ${t.label}`)
+  }
+  console.log()
+
+  // Prompt for confirmation
+  process.stdout.write("Proceed with uninstall? [y/N] ")
+  const answer = await new Promise<string>((resolve) => {
+    let buf = ""
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", (chunk: string) => {
+      buf += chunk
+      if (chunk === "\r" || chunk === "\n" || chunk.length > 0) {
+        process.stdin.setRawMode(false)
+        process.stdin.pause()
+        resolve(buf.trim())
+      }
+    })
+  })
+  console.log(answer)
+
+  if (answer.toLowerCase() !== "y") {
+    console.log("Uninstall cancelled.")
+    return
+  }
+
+  let hadError = false
+  for (const t of targets) {
+    if (existsSync(t.path)) {
+      try {
+        await rm(t.path, { recursive: true, force: true })
+        console.log(`  removed  ${t.label}`)
+      } catch (err) {
+        console.error(`  failed   ${t.label}: ${(err as Error).message}`)
+        hadError = true
+      }
+    }
+  }
+
+  if (!hadError) {
+    console.log("\nclaudios uninstalled successfully.")
+  } else {
+    console.error("\nUninstall completed with errors.")
+    process.exitCode = 1
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +215,11 @@ async function main(): Promise<void> {
 
   if (cliArgs.command === "version") {
     printVersion()
+    return
+  }
+
+  if (cliArgs.command === "uninstall") {
+    await runUninstall()
     return
   }
 

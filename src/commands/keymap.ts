@@ -20,6 +20,11 @@ export type KeymapEntry = {
   readonly description: string
 }
 
+export function normalizeKeyBinding(key: string): string {
+  // Kitty alternate keys report Ctrl+Shift+/ as the unshifted base key.
+  return key === "ctrl+?" ? "ctrl+/" : key
+}
+
 // ---------------------------------------------------------------------------
 // Default bindings
 // ---------------------------------------------------------------------------
@@ -48,6 +53,7 @@ const defaultBindings: readonly KeymapEntry[] = [
   { key: "A", context: "global", mode: "normal", action: "mode.insertEnd", description: "Insert at end of line" },
   { key: "I", context: "global", mode: "normal", action: "mode.insertStart", description: "Insert at start of line" },
   { key: "?", context: "global", mode: "normal", action: "keys.help", description: "Show keybinding help" },
+  { key: "ctrl+/", context: "global", mode: "plain", action: "keys.help", description: "Show keybinding help" },
 
   // Submit
   { key: "enter", context: "global", mode: "plain", action: "prompt.submit", description: "Submit prompt" },
@@ -69,7 +75,10 @@ export class Keymap {
 
   constructor(overrides?: Record<string, string>) {
     // Start with defaults
-    this.entries = [...defaultBindings]
+    this.entries = defaultBindings.map((entry) => ({
+      ...entry,
+      key: normalizeKeyBinding(entry.key),
+    }))
 
     // Apply overrides: the keys in overrides map action -> key
     if (overrides) {
@@ -77,7 +86,7 @@ export class Keymap {
         const idx = this.entries.findIndex((e) => e.action === action)
         if (idx !== -1) {
           const existing = this.entries[idx]!
-          this.entries[idx] = { ...existing, key }
+          this.entries[idx] = { ...existing, key: normalizeKeyBinding(key) }
         }
       }
     }
@@ -91,23 +100,25 @@ export class Keymap {
     context: KeyContext,
     interactionMode: InteractionModeContext,
   ): string | null {
+    const normalizedKey = normalizeKeyBinding(key)
+
     // Modal context takes priority
     if (context === "modal") {
       const modalEntry = this.entries.find(
-        (e) => e.key === key && e.context === "modal",
+        (e) => e.key === normalizedKey && e.context === "modal",
       )
       if (modalEntry) return modalEntry.action
     }
 
     // Check mode-specific bindings first
     const modeEntry = this.entries.find(
-      (e) => e.key === key && e.context === context && e.mode === interactionMode,
+      (e) => e.key === normalizedKey && e.context === context && e.mode === interactionMode,
     )
     if (modeEntry) return modeEntry.action
 
     // Then mode-agnostic global bindings
     const globalEntry = this.entries.find(
-      (e) => e.key === key && e.context === context && e.mode === undefined,
+      (e) => e.key === normalizedKey && e.context === context && e.mode === undefined,
     )
     if (globalEntry) return globalEntry.action
 

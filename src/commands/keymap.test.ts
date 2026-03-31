@@ -2,11 +2,13 @@ import { describe, expect, it } from "bun:test"
 import { Keymap } from "#commands/keymap"
 
 describe("Keymap", () => {
-  it("resolves ? in normal mode to keybinding help", () => {
+  it("resolves help shortcuts across normal and plain modes", () => {
     const keymap = new Keymap()
 
     expect(keymap.resolve("?", "global", "normal")).toBe("keys.help")
     expect(keymap.resolve("?", "global", "insert")).toBeNull()
+    expect(keymap.resolve("ctrl+/", "global", "plain")).toBe("keys.help")
+    expect(keymap.resolve("ctrl+?", "global", "plain")).toBe("keys.help")
     expect(keymap.resolve("?", "global", "plain")).toBeNull()
   })
 

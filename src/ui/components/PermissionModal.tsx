@@ -44,7 +44,11 @@ export function PermissionDialogContent(props: PermissionDialogContentProps) {
         </text>
       </box>
       <text>
-        <span fg={theme.text}>Claude wants approval before running this tool.</span>
+        <span fg={theme.text}>
+          {toolName === "ExitPlanMode"
+            ? "Claude wants to exit plan mode."
+            : "Claude wants approval before running this tool."}
+        </span>
       </text>
       <text>
         <span fg={theme.mutedText}>Review the tool input, then allow or deny.</span>

@@ -390,8 +390,8 @@ export class ConversationService {
 
   private buildCanUseTool() {
     return async (
-      _toolName: string,
-      _input: Record<string, unknown>,
+      toolName: string,
+      input: Record<string, unknown>,
       _options: {
         signal: AbortSignal
         title?: string
@@ -401,7 +401,23 @@ export class ConversationService {
         [key: string]: unknown
       },
     ): Promise<PermissionResult> => {
-      // Yolo mode: auto-approve all tool calls without prompting
+      // ExitPlanMode requires explicit user permission when in plan mode
+      if (toolName === "ExitPlanMode" && this.state.permissionMode === "plan") {
+        const allowed = await new Promise<boolean>((resolve) => {
+          this.dispatch({
+            type: "set_session_state",
+            state: {
+              status: "awaiting_permission",
+              request: { toolName, toolInput: input, resolve },
+            },
+          })
+        })
+        return allowed
+          ? { behavior: "allow" }
+          : { behavior: "deny", message: "User denied permission to exit plan mode." }
+      }
+
+      // Yolo mode: auto-approve all other tool calls without prompting
       return { behavior: "allow" }
     }
   }

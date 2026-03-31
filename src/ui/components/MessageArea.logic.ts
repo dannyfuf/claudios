@@ -5,6 +5,7 @@ import type {
   SpawnedTask,
   SpawnedTaskStatus,
   SpawnedTaskUsage,
+  TodoItem,
 } from "#sdk/types"
 import type { DisplayMessage, ThinkingDisplayMessage } from "#state/types"
 
@@ -131,7 +132,55 @@ export function normalizeToolLabel(value: string): string {
     return `${server}: ${tool}`
   }
 
+  // Humanize TodoWrite
+  if (withoutComplete.toLowerCase() === "todowrite") {
+    return "tasks"
+  }
+
   return withoutComplete
+}
+
+export function getTodoProgress(items: readonly TodoItem[]): {
+  readonly currentIndex: number
+  readonly total: number
+  readonly completedCount: number
+  readonly activeItem: TodoItem | null
+} {
+  const total = items.length
+  const completedCount = items.filter((i) => i.status === "completed").length
+  const activeItem =
+    items.find((i) => i.status === "in_progress") ??
+    items.find((i) => i.status === "pending") ??
+    null
+  const currentIndex = activeItem ? items.indexOf(activeItem) : total
+  return { currentIndex, total, completedCount, activeItem }
+}
+
+export function formatTodoSummaryLine(items: readonly TodoItem[], maxLength = 50): string {
+  if (items.length === 0) {
+    return ""
+  }
+
+  const { completedCount, total, activeItem } = getTodoProgress(items)
+
+  if (completedCount === total) {
+    return `tasks ${completedCount}/${total} done`
+  }
+
+  const current = completedCount + 1
+  const prefix = `${current}/${total}`
+
+  if (!activeItem) {
+    return `${prefix} tasks`
+  }
+
+  const detail = activeItem.activeForm ?? activeItem.content
+  const line = `${prefix} ${detail}`
+  const singleLine = line.replace(/\s+/g, " ").trim()
+  if (singleLine.length <= maxLength) {
+    return singleLine
+  }
+  return `${singleLine.slice(0, maxLength - 1)}…`
 }
 
 export function getToolStatusPresentation(status: ToolCallStatus): ToolStatusPresentation {
@@ -169,6 +218,15 @@ export function getToolBriefDetail(toolCall: {
   const input = toolCall.input
 
   if (input) {
+    // Special case: TodoWrite uses a `todos` array — show the task summary
+    const todosArray = input["todos"]
+    if (Array.isArray(todosArray) && todosArray.length > 0) {
+      const items = parseTodoItemsForPreview(todosArray)
+      if (items.length > 0) {
+        return formatTodoSummaryLine(items)
+      }
+    }
+
     for (const key of TOOL_PREVIEW_KEYS) {
       const value = input[key]
       if (typeof value === "string" && value.trim().length > 0) {
@@ -182,6 +240,35 @@ export function getToolBriefDetail(toolCall: {
   }
 
   return ""
+}
+
+function parseTodoItemsForPreview(todos: readonly unknown[]): TodoItem[] {
+  const items: TodoItem[] = []
+  for (const item of todos) {
+    if (!isRecord(item)) {
+      continue
+    }
+    const content = typeof item["content"] === "string" ? item["content"].trim() : ""
+    const status = item["status"]
+    if (!content || (status !== "pending" && status !== "in_progress" && status !== "completed")) {
+      continue
+    }
+    const activeFormRaw = item["activeForm"]
+    const activeForm =
+      typeof activeFormRaw === "string" && activeFormRaw.trim().length > 0
+        ? activeFormRaw.trim()
+        : undefined
+    if (activeForm) {
+      items.push({ content, status, activeForm })
+    } else {
+      items.push({ content, status })
+    }
+  }
+  return items
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
 export function getToolCallDiffFileChange(

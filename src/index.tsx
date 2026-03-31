@@ -10,9 +10,11 @@
 
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { CONFIG_PATH, ConfigSchema, loadConfig } from "#config/schema"
 import { ConversationService } from "#state/conversation-service"
 import { Keymap } from "#commands/keymap"
@@ -41,6 +43,7 @@ type CLIArgs =
     }
   | { command: "help" }
   | { command: "version" }
+  | { command: "upgrade" }
   | { command: "uninstall" }
   | { command: "sessions.list" }
   | { command: "sessions.show"; sessionId: string | null }
@@ -82,6 +85,9 @@ function parseArgs(argv: string[]): CLIArgs {
       case "-v":
       case "version":
         return { command: "version" }
+      case "--upgrade":
+      case "upgrade":
+        return { command: "upgrade" }
       case "--uninstall":
       case "uninstall":
         return { command: "uninstall" }
@@ -119,6 +125,7 @@ Commands:
   sessions list          List saved sessions
   sessions show <id>     Show a session transcript
   config                 Show resolved config
+  upgrade                Pull latest repo changes and rebuild claudios
   uninstall              Remove claudios from your system
   help                   Show this help
 
@@ -127,6 +134,7 @@ Flags:
   --model <model>        Override default model
   --permission-mode <m>  Set permission mode
   --cwd <path>           Set working directory
+  --upgrade              Pull latest repo changes and rebuild claudios
   --uninstall            Remove claudios from your system
   -h, --help             Show help
   -v, --version          Show version
@@ -137,8 +145,70 @@ function printVersion(): void {
   console.log("claudios v0.1.0")
 }
 
+async function runUpgrade(): Promise<void> {
+  if (!Bun.which("git")) {
+    console.error("Error: git is required to upgrade claudios.")
+    process.exitCode = 1
+    return
+  }
+
+  if (!Bun.which("bun")) {
+    console.error("Error: bun is required to rebuild claudios after upgrade.")
+    process.exitCode = 1
+    return
+  }
+
+  const repoRoot = await findRunningRepoRoot()
+  if (!repoRoot) {
+    console.error("Error: could not locate the claudios repository for the running binary.")
+    console.error("Run the installer again to refresh the local checkout.")
+    process.exitCode = 1
+    return
+  }
+
+  const runStep = (command: string[], label: string) => {
+    console.log(label)
+    const result = Bun.spawnSync(command, {
+      cwd: repoRoot,
+      env: process.env,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    })
+
+    if (result.exitCode !== 0) {
+      throw new Error(`${command.join(" ")} failed with exit code ${result.exitCode}`)
+    }
+  }
+
+  console.log(`Upgrading claudios from ${repoRoot}`)
+  console.log()
+
+  try {
+    runStep(["git", "pull", "--ff-only"], "Fetching latest changes...")
+
+    const frozenInstall = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], {
+      cwd: repoRoot,
+      env: process.env,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    })
+
+    if (frozenInstall.exitCode !== 0) {
+      console.log("Falling back to bun install...")
+      runStep(["bun", "install"], "Installing dependencies...")
+    }
+
+    runStep(["bun", "run", "build"], "Building claudios...")
+    console.log("\nclaudios upgraded successfully.")
+  } catch (error) {
+    console.error(`\nUpgrade failed: ${getErrorMessage(error)}`)
+    process.exitCode = 1
+  }
+}
+
 async function runUninstall(): Promise<void> {
-  const { existsSync } = await import("node:fs")
   const { rm } = await import("node:fs/promises")
   const { homedir } = await import("node:os")
   const { join } = await import("node:path")
@@ -215,6 +285,11 @@ async function main(): Promise<void> {
 
   if (cliArgs.command === "version") {
     printVersion()
+    return
+  }
+
+  if (cliArgs.command === "upgrade") {
+    await runUpgrade()
     return
   }
 
@@ -325,6 +400,7 @@ async function main(): Promise<void> {
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       useMouse: true,
+      useKittyKeyboard: { disambiguate: true, alternateKeys: true },
     })
     root = createRoot(renderer)
     root.render(renderApp())
@@ -413,6 +489,30 @@ function resolveEditorCommand(editorSetting: string): string {
   return editorSetting
     .replaceAll("$VISUAL", visual || resolvedDefault)
     .replaceAll("$EDITOR", editor || resolvedDefault)
+}
+
+async function findRunningRepoRoot(): Promise<string | null> {
+  const entryPath = process.argv[1]
+    ? await realpath(process.argv[1]).catch(() => process.argv[1]!)
+    : fileURLToPath(import.meta.url)
+
+  let current = dirname(entryPath)
+  while (true) {
+    if (
+      existsSync(join(current, ".git"))
+      && existsSync(join(current, "package.json"))
+      && existsSync(join(current, "install.sh"))
+    ) {
+      return current
+    }
+
+    const parent = dirname(current)
+    if (parent === current) {
+      return null
+    }
+
+    current = parent
+  }
 }
 
 function shellQuote(value: string): string {

@@ -77,6 +77,7 @@ The script will:
 7. Add `~/.local/bin` to your `$PATH` if needed
 
 > **Note:** The installer is idempotent — running it again will update an existing installation.
+> You can also update an installed copy in place with `claudios --upgrade`.
 
 You can customize the install location with environment variables:
 
@@ -155,10 +156,23 @@ claudios sessions show <session-id>
 # View the resolved configuration
 claudios config
 
+# Upgrade the installed checkout and rebuild it
+claudios --upgrade
+
 # Help & version
 claudios --help
 claudios --version
 ```
+
+---
+
+## Updating
+
+```sh
+claudios --upgrade
+```
+
+This pulls the latest changes into the repo backing the current `claudios` binary, reinstalls dependencies if needed, and rebuilds the app.
 
 ---
 

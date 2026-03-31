@@ -19,6 +19,7 @@ import { CONFIG_PATH, ConfigSchema, loadConfig } from "#config/schema"
 import { ConversationService } from "#state/conversation-service"
 import { Keymap } from "#commands/keymap"
 import { checkAuth, getSessionInfo, getSessionMessages, listSessions } from "#sdk/client"
+import { coalesceSessionMessages } from "#sdk/session-history"
 import { sessionSummaryFromSDK } from "#sdk/types"
 import { App } from "#ui/App"
 import {
@@ -334,7 +335,7 @@ async function main(): Promise<void> {
       return
     }
 
-    const messages = await getSessionMessages(cliArgs.sessionId)
+    const messages = coalesceSessionMessages(await getSessionMessages(cliArgs.sessionId))
     console.log(`Session: ${info.sessionId}`)
     console.log(`Title: ${info.customTitle ?? info.summary ?? "(untitled)"}`)
     console.log(`Last modified: ${new Date(info.lastModified).toLocaleString()}`)

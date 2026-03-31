@@ -25,6 +25,7 @@ import type {
 } from "#sdk/types"
 import { MessageUUID, SessionId, sessionSummaryFromSDK } from "#sdk/types"
 import type { SessionSummary } from "#sdk/types"
+import { coalesceSessionMessages, getSessionMessageFragmentCount } from "#sdk/session-history"
 import { extractToolResultIds, normalizeFileToolResult, normalizeTodoToolResult } from "#sdk/tool-result"
 import {
   type AssistantDisplayMessage,
@@ -312,7 +313,7 @@ export class ConversationService {
     await this.cleanup()
 
     try {
-      const history = await this.dependencies.getSessionMessages(sessionId)
+      const history = coalesceSessionMessages(await this.dependencies.getSessionMessages(sessionId))
       const historyState = projectSessionHistory(history)
 
       this.dispatch({ type: "load_history", messages: historyState.messages })
@@ -1349,10 +1350,18 @@ function projectSessionMessage(
   }
 
   let nextState = state
-
-  for (const block of extractAssistantBlocks(messageUuid, message["message"], {
+  const fragmentCount = getSessionMessageFragmentCount(message)
+  const blocks = extractAssistantBlocks(messageUuid, message["message"], {
     defaultToolStatus: "completed",
-  })) {
+  })
+  const shouldSkipThinkingBlocks =
+    fragmentCount > 1 && blocks.some((block) => block.kind === "assistant" || block.kind === "tool_call")
+
+  for (const block of blocks) {
+    if (shouldSkipThinkingBlocks && block.kind === "thinking") {
+      continue
+    }
+
     switch (block.kind) {
       case "assistant": {
         nextState = conversationReducer(nextState, {

@@ -124,6 +124,90 @@ describe("ConversationService", () => {
     expect(getMessageText(service.getState().messages.at(-1))).toBe("Continue from here")
   })
 
+  it("coalesces fragmented assistant history before projecting it into display rows", async () => {
+    const service = new ConversationService(
+      TEST_CONFIG,
+      undefined,
+      {
+        createQuery: () => createFakeQuery(),
+        getQueryMetadata: async () => createEmptyMetadata(),
+        getSessionMessages: async () => [
+          { type: "user", uuid: "user-1", message: { content: "Earlier prompt" } },
+          {
+            type: "assistant",
+            uuid: "assistant-1",
+            parent_tool_use_id: null,
+            message: {
+              id: "msg-1",
+              content: [{ type: "text", text: "Earlier " }],
+            },
+          },
+          {
+            type: "assistant",
+            uuid: "assistant-2",
+            parent_tool_use_id: null,
+            message: {
+              id: "msg-1",
+              content: [{ type: "text", text: "answer" }],
+            },
+          },
+        ],
+        listSessions: async () => [],
+        loadSupportedMetadata: async () => createEmptyMetadata(),
+        resumeSession: () => createFakeQuery(),
+      },
+    )
+
+    await service.loadSession("session-1")
+
+    expect(service.getState().messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Earlier prompt",
+      "assistant:Earlier answer",
+    ])
+  })
+
+  it("skips historical thinking fragments once a completed assistant reply exists for that turn", async () => {
+    const service = new ConversationService(
+      TEST_CONFIG,
+      undefined,
+      {
+        createQuery: () => createFakeQuery(),
+        getQueryMetadata: async () => createEmptyMetadata(),
+        getSessionMessages: async () => [
+          { type: "user", uuid: "user-1", message: { content: "Earlier prompt" } },
+          {
+            type: "assistant",
+            uuid: "assistant-1",
+            parent_tool_use_id: null,
+            message: {
+              id: "msg-1",
+              content: [{ type: "thinking", thinking: "Plan the answer" }],
+            },
+          },
+          {
+            type: "assistant",
+            uuid: "assistant-2",
+            parent_tool_use_id: null,
+            message: {
+              id: "msg-1",
+              content: [{ type: "text", text: "Here is the answer." }],
+            },
+          },
+        ],
+        listSessions: async () => [],
+        loadSupportedMetadata: async () => createEmptyMetadata(),
+        resumeSession: () => createFakeQuery(),
+      },
+    )
+
+    await service.loadSession("session-1")
+
+    expect(service.getState().messages.map((message) => `${message.kind}:${getMessageText(message)}`)).toEqual([
+      "user:Earlier prompt",
+      "assistant:Here is the answer.",
+    ])
+  })
+
   it("exposes loading and ready states for metadata preload and session resume", async () => {
     const history = deferred<readonly unknown[]>()
     const metadata = deferred<ReturnType<typeof createEmptyMetadata>>()

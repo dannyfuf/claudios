@@ -351,10 +351,10 @@ export class ConversationService {
   }
 
   async setPermissionMode(mode: string): Promise<void> {
-    this.dispatch({ type: "set_permission_mode", mode })
     if (this.activeQuery) {
       await this.activeQuery.setPermissionMode(mode as never)
     }
+    this.dispatch({ type: "set_permission_mode", mode })
   }
 
   setTheme(themeName: ThemeName): void {
@@ -1059,6 +1059,7 @@ export class ConversationService {
     return {
       canUseTool,
       model: this.state.model,
+      permissionMode: this.state.permissionMode as never,
     }
   }
 

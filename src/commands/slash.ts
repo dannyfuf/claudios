@@ -121,6 +121,14 @@ export const LOCAL_SLASH_COMMANDS = [
     acceptsArguments: false,
     submitOnExactMatch: true,
   },
+  {
+    name: "plan",
+    aliases: [],
+    description: "Toggle plan mode on/off",
+    insertText: "/plan",
+    acceptsArguments: false,
+    submitOnExactMatch: true,
+  },
 ] as const satisfies readonly LocalSlashCommandEntry[]
 
 export type LocalSlashCommandDefinition = (typeof LOCAL_SLASH_COMMANDS)[number]

@@ -353,6 +353,18 @@ function AppContent() {
           return
         }
 
+        case "plan": {
+          const isCurrentlyPlan = service.getState().permissionMode === "plan"
+          const nextMode: string = isCurrentlyPlan ? "default" : "plan"
+          try {
+            await service.setPermissionMode(nextMode)
+            toast.success(`Plan mode: ${nextMode === "plan" ? "on" : "off"}`)
+          } catch (error) {
+            toast.error(`Failed to set permission mode: ${getErrorMessage(error)}`)
+          }
+          return
+        }
+
         case "perm": {
           const nextMode = command.args.join(" ").trim()
           if (!nextMode) {

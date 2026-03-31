@@ -9,6 +9,8 @@ import { useMemo, type RefObject } from "react"
 import { ScrollBoxRenderable, SyntaxStyle } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
 import { useConversationState, useThemePalette } from "#ui/hooks"
+import { MessageFrame } from "#ui/components/messages/MessageFrame"
+import { MessageHeader } from "#ui/components/messages/MessageHeader"
 import type {
   DisplayMessage,
   UserDisplayMessage,
@@ -21,22 +23,22 @@ import type {
   StartupState,
 } from "#state/types"
 import {
-  formatTaskKindLabel,
   getToolCallDiffFileChange,
   getTaskContextLabel,
   formatTaskUsage,
   getMessageLayout,
+  getMessagePresentation,
   getTaskDetailLine,
-  getTaskStatusPresentation,
   getToolBriefDetail,
   getToolStatusPresentation,
   mergeConsecutiveThinkingMessages,
   normalizeToolLabel,
-  shouldShowAssistantResponseDivider,
   type StatusTone,
+  type MessagePresentation,
   type MessageLayout,
 } from "#ui/components/MessageArea.logic"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
+import type { ThemePalette } from "#ui/theme"
 
 type MessageAreaProps = {
   readonly scrollRef: RefObject<ScrollBoxRenderable | null>
@@ -133,9 +135,6 @@ export function MessageArea(props: MessageAreaProps) {
         <EmptyState layout={layout} startup={startup} theme={theme} />
       ) : (
         visibleMessages.map((msg, i) => {
-          const showAssistantResponseDivider =
-            msg.kind === "assistant" && shouldShowAssistantResponseDivider(visibleMessages, i)
-
           return (
             <MessageBlock
               key={msg.uuid ?? String(i)}
@@ -149,7 +148,6 @@ export function MessageArea(props: MessageAreaProps) {
                 taskMessagesByToolUseId,
               )}
               activeTaskToolCalls={activeTaskToolCallsByTaskId}
-              showAssistantResponseDivider={showAssistantResponseDivider}
               diffMode={diffMode}
             />
           )
@@ -292,7 +290,11 @@ function resolveTaskContextLabel(
   taskMessagesById: ReadonlyMap<string, TaskDisplayMessage>,
   taskMessagesByToolUseId: ReadonlyMap<string, TaskDisplayMessage>,
 ): string | null {
-  if (message.kind !== "thinking" && message.kind !== "tool_call") {
+  if (
+    message.kind !== "assistant" &&
+    message.kind !== "thinking" &&
+    message.kind !== "tool_call"
+  ) {
     return null
   }
 
@@ -312,325 +314,245 @@ function MessageBlock({
   layout,
   taskContextLabel,
   activeTaskToolCalls,
-  showAssistantResponseDivider,
   diffMode,
 }: {
   message: DisplayMessage
   syntaxStyle: SyntaxStyle
-  theme: ReturnType<typeof useThemePalette>
+  theme: ThemePalette
   layout: MessageLayout
   taskContextLabel: string | null
   activeTaskToolCalls: ReadonlyMap<string, readonly ToolCallDisplayMessage["toolCall"][]>
-  showAssistantResponseDivider: boolean
   diffMode: "unified" | "split"
 }) {
+  const presentation = getMessagePresentation(message, taskContextLabel)
+
   switch (message.kind) {
     case "user":
-      return <UserMessage message={message} theme={theme} layout={layout} />
+      return <UserMessage message={message} presentation={presentation} theme={theme} layout={layout} />
     case "assistant":
       return (
         <AssistantMessage
           message={message}
+          presentation={presentation}
           syntaxStyle={syntaxStyle}
           theme={theme}
           layout={layout}
-          showAssistantResponseDivider={showAssistantResponseDivider}
         />
       )
     case "thinking":
       return (
         <ThinkingMessage
           message={message}
+          presentation={presentation}
           theme={theme}
           layout={layout}
-          taskContextLabel={taskContextLabel}
         />
       )
     case "tool_call":
       return (
         <ToolCallMessage
           message={message}
+          presentation={presentation}
           syntaxStyle={syntaxStyle}
           theme={theme}
           layout={layout}
-          taskContextLabel={taskContextLabel}
           diffMode={diffMode}
         />
       )
     case "system":
-      return <SystemMessage message={message} theme={theme} layout={layout} />
+      return <SystemMessage message={message} presentation={presentation} theme={theme} layout={layout} />
     case "task":
       return (
         <TaskMessage
           message={message}
+          presentation={presentation}
           theme={theme}
           layout={layout}
           activeToolCalls={activeTaskToolCalls.get(message.task.id) ?? []}
         />
       )
     case "error":
-      return <ErrorMessage message={message} theme={theme} layout={layout} />
+      return <ErrorMessage message={message} presentation={presentation} theme={theme} layout={layout} />
   }
 }
 
 function UserMessage({
   message,
+  presentation,
   theme,
   layout,
 }: {
   message: UserDisplayMessage
-  theme: ReturnType<typeof useThemePalette>
+  presentation: MessagePresentation
+  theme: ThemePalette
   layout: MessageLayout
 }) {
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={layout.compact ? 1 : 2}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box width="100%" maxWidth={layout.columnWidth} flexDirection="column" alignItems="flex-end">
-        <box
-          width={layout.userBubbleWidth}
-          border
-          borderStyle="rounded"
-          borderColor={theme.borderStrong}
-          backgroundColor={theme.userSurface}
-          paddingX={layout.compact ? 1 : 2}
-          paddingY={layout.sectionPaddingY}
-        >
-          <text>
-            <span fg={theme.text}>{message.text}</span>
-          </text>
-        </box>
-        <box flexDirection="row" gap={1} marginTop={layout.compact ? 0 : 1}>
-          <text>
-            <span fg={theme.mutedText}>you</span>
-          </text>
-          <text>
-            <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
-          </text>
-        </box>
-      </box>
-    </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={layout.metaGapBottom}
+        model={presentation.header}
+        theme={theme}
+      />
+      <text>
+        <span fg={theme.text}>{message.text}</span>
+      </text>
+    </MessageFrame>
   )
 }
 
 function AssistantMessage({
   message,
+  presentation,
   syntaxStyle,
   theme,
   layout,
-  showAssistantResponseDivider,
 }: {
   message: AssistantDisplayMessage
+  presentation: MessagePresentation
   syntaxStyle: SyntaxStyle
-  theme: ReturnType<typeof useThemePalette>
+  theme: ThemePalette
   layout: MessageLayout
-  showAssistantResponseDivider: boolean
 }) {
   const hasText = message.text.trim().length > 0
 
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={1}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box
-        width="100%"
-        maxWidth={layout.columnWidth}
-        flexDirection="column"
-      >
-        {showAssistantResponseDivider ? (
-          <AssistantResponseDivider theme={theme} compact={layout.compact} />
-        ) : null}
-        {hasText ? (
-          <box paddingX={layout.compact ? 0 : 1}>
-            <markdown
-              content={message.text}
-              streaming={message.isStreaming}
-              syntaxStyle={syntaxStyle}
-            />
-          </box>
-        ) : null}
-        {hasText || message.isStreaming ? (
-          <box
-            flexDirection="row"
-            gap={1}
-            marginTop={hasText ? 1 : 0}
-            paddingX={layout.compact ? 0 : 1}
-          >
-            <text>
-              <span fg={theme.mutedText}>claude</span>
-            </text>
-            <text>
-              <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
-            </text>
-            {message.isStreaming ? (
-              <text>
-                <span fg={theme.primary}>
-                  <strong>{layout.compact ? "live" : "streaming"}</strong>
-                </span>
-              </text>
-            ) : null}
-          </box>
-        ) : null}
-      </box>
-    </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={hasText ? layout.metaGapBottom : 0}
+        model={presentation.header}
+        theme={theme}
+      />
+      {hasText ? (
+        <box>
+          <markdown
+            content={message.text}
+            streaming={message.isStreaming}
+            syntaxStyle={syntaxStyle}
+          />
+        </box>
+      ) : null}
+    </MessageFrame>
   )
 }
 
 function ThinkingMessage({
   message,
+  presentation,
   theme,
   layout,
-  taskContextLabel,
 }: {
   message: ThinkingDisplayMessage
-  theme: ReturnType<typeof useThemePalette>
+  presentation: MessagePresentation
+  theme: ThemePalette
   layout: MessageLayout
-  taskContextLabel: string | null
 }) {
   const thinkingLines = message.text.split("\n")
 
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={1}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box
-        width="100%"
-        maxWidth={layout.columnWidth}
-        flexDirection="column"
-        border
-        borderStyle="rounded"
-        borderColor={theme.borderSubtle}
-        paddingX={1}
-        paddingY={0}
-      >
-        <box flexDirection="row" justifyContent="space-between" gap={1} marginBottom={layout.metaGapBottom}>
-          <box flexDirection="row" gap={1} minWidth={0}>
-            <text>
-              <span fg={theme.mutedText}>thinking</span>
-            </text>
-            {taskContextLabel ? (
-              <text>
-                <span fg={theme.mutedText}>{taskContextLabel}</span>
-              </text>
-            ) : null}
-          </box>
-          <box flexDirection="row" gap={1}>
-            <text>
-              <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
-            </text>
-            {message.isStreaming ? (
-              <text>
-                <span fg={theme.mutedText}>{layout.compact ? "live" : "streaming"}</span>
-              </text>
-            ) : null}
-          </box>
-        </box>
-        <box paddingLeft={layout.compact ? 1 : 2} flexDirection="column">
-          {thinkingLines.map((line, index) => (
-            <text key={`${message.uuid}:${index}`}>
-              <span fg={theme.mutedText}>
-                <em>{line}</em>
-              </span>
-            </text>
-          ))}
-        </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={layout.metaGapBottom}
+        model={presentation.header}
+        theme={theme}
+      />
+      <box paddingLeft={layout.compact ? 1 : 2} flexDirection="column">
+        {thinkingLines.map((line, index) => (
+          <text key={`${message.uuid}:${index}`}>
+            <span fg={theme.mutedText}>
+              <em>{line}</em>
+            </span>
+          </text>
+        ))}
       </box>
-    </box>
-  )
-}
-
-function AssistantResponseDivider({
-  theme,
-  compact,
-}: {
-  theme: ReturnType<typeof useThemePalette>
-  compact: boolean
-}) {
-  return (
-    <box justifyContent="center" marginBottom={1}>
-      <text>
-        <span fg={theme.mutedText}>{compact ? "response" : "-- response --"}</span>
-      </text>
-    </box>
+    </MessageFrame>
   )
 }
 
 function ToolCallMessage({
   message,
+  presentation,
   syntaxStyle,
   theme,
   layout,
-  taskContextLabel,
   diffMode,
 }: {
   message: ToolCallDisplayMessage
+  presentation: MessagePresentation
   syntaxStyle: SyntaxStyle
-  theme: ReturnType<typeof useThemePalette>
+  theme: ThemePalette
   layout: MessageLayout
-  taskContextLabel: string | null
   diffMode: "unified" | "split"
 }) {
   const fileChange = getToolCallDiffFileChange(message.toolCall)
 
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={1}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box
-        width="100%"
-        maxWidth={layout.columnWidth}
-        flexDirection="column"
-        border
-        borderStyle="rounded"
-        borderColor={theme.borderSubtle}
-        backgroundColor={theme.toolSurface}
-        paddingX={1}
-        paddingY={layout.sectionPaddingY}
-      >
-        <box flexDirection="row" justifyContent="space-between" gap={1} marginBottom={layout.metaGapBottom}>
-          <box flexDirection="row" gap={1} minWidth={0}>
-            <text>
-              <span fg={theme.mutedText}>tool</span>
-            </text>
-            {taskContextLabel ? (
-              <text>
-                <span fg={theme.mutedText}>{taskContextLabel}</span>
-              </text>
-            ) : null}
-          </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={layout.metaGapBottom}
+        model={presentation.header}
+        theme={theme}
+      />
+      <CompactToolRow toolCall={message.toolCall} theme={theme} />
+      {fileChange ? (
+        <box marginTop={1} flexDirection="column">
           <text>
-            <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
+            <span fg={theme.mutedText}>
+              {fileChange.changeType === "added" ? "created" : "modified"} {fileChange.filePath}
+            </span>
           </text>
-        </box>
-        <CompactToolRow toolCall={message.toolCall} theme={theme} />
-        {fileChange ? (
-          <box marginTop={1} flexDirection="column">
-            <text>
-              <span fg={theme.mutedText}>
-                {fileChange.changeType === "added" ? "created" : "modified"} {fileChange.filePath}
-              </span>
-            </text>
-            <box marginTop={1} width="100%">
-              <diff
-                diff={fileChange.patch}
-                view={diffMode}
-                showLineNumbers={true}
-                syntaxStyle={syntaxStyle}
-                wrapMode="none"
-              />
-            </box>
+          <box marginTop={1} width="100%">
+            <diff
+              diff={fileChange.patch}
+              view={diffMode}
+              showLineNumbers={true}
+              syntaxStyle={syntaxStyle}
+              wrapMode="none"
+            />
           </box>
-        ) : null}
-      </box>
-    </box>
+        </box>
+      ) : null}
+    </MessageFrame>
   )
 }
 
@@ -642,7 +564,7 @@ function CompactToolRow({
   theme,
 }: {
   toolCall: ToolCallDisplayMessage["toolCall"]
-  theme: ReturnType<typeof useThemePalette>
+  theme: ThemePalette
 }) {
   const statusPresentation = getToolStatusPresentation(toolCall.status)
   const statusColor = getStatusToneColor(statusPresentation.tone, theme)
@@ -679,185 +601,177 @@ function CompactToolRow({
 
 function SystemMessage({
   message,
+  presentation,
   theme,
   layout,
 }: {
   message: SystemDisplayMessage
-  theme: ReturnType<typeof useThemePalette>
+  presentation: MessagePresentation
+  theme: ThemePalette
   layout: MessageLayout
 }) {
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={1}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box
-        width="100%"
-        maxWidth={layout.columnWidth}
-        paddingX={layout.compact ? 0 : 1}
-      >
-        <box flexDirection="row" gap={1} marginBottom={layout.metaGapBottom}>
-          <text>
-            <span fg={theme.mutedText}>system</span>
-          </text>
-          <text>
-            <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
-          </text>
-        </box>
-        <text>
-          <span fg={theme.mutedText}>{message.text}</span>
-        </text>
-      </box>
-    </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={layout.metaGapBottom}
+        model={presentation.header}
+        theme={theme}
+      />
+      <text>
+        <span fg={theme.mutedText}>{message.text}</span>
+      </text>
+    </MessageFrame>
   )
 }
 
 function TaskMessage({
   message,
+  presentation,
   theme,
   layout,
   activeToolCalls,
 }: {
   message: TaskDisplayMessage
-  theme: ReturnType<typeof useThemePalette>
+  presentation: MessagePresentation
+  theme: ThemePalette
   layout: MessageLayout
   activeToolCalls: readonly ToolCallDisplayMessage["toolCall"][]
 }) {
-  const statusPresentation = getTaskStatusPresentation(message.task.status)
-  const statusColor = getStatusToneColor(statusPresentation.tone, theme)
-  const kindLabel = formatTaskKindLabel(message.task)
   const detailLine = getTaskDetailLine(message.task)
   const usageLine = formatTaskUsage(message.task.usage)
   const visibleActiveToolCalls = message.task.status === "running" ? activeToolCalls : []
 
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={1}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box
-        width="100%"
-        maxWidth={layout.columnWidth}
-        flexDirection="column"
-        border
-        borderStyle="rounded"
-        borderColor={statusColor}
-        backgroundColor={theme.toolSurface}
-        paddingX={1}
-        paddingY={layout.sectionPaddingY}
-      >
-        <box flexDirection="row" justifyContent="space-between" gap={1} marginBottom={layout.metaGapBottom}>
-          <box flexDirection="row" gap={1} minWidth={0}>
-            <box width={1} minWidth={1} alignItems="center" justifyContent="center">
-              {statusPresentation.kind === "spinner" ? (
-                <LoadingIndicator color={statusColor} />
-              ) : (
-                <text>
-                  <span fg={statusColor}>{statusPresentation.icon}</span>
-                </text>
-              )}
-            </box>
-            <text>
-              <span fg={statusColor}>
-                <strong>{message.task.status}</strong>
-              </span>
-            </text>
-            <text>
-              <span fg={theme.mutedText}>{kindLabel}</span>
-            </text>
-          </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={layout.metaGapBottom}
+        model={presentation.header}
+        theme={theme}
+      />
+      <text>
+        <span fg={theme.text}>{message.task.description}</span>
+      </text>
+      {detailLine ? (
+        <box marginTop={1}>
           <text>
-            <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
+            <span fg={theme.mutedText}>{detailLine}</span>
           </text>
         </box>
-        <text>
-          <span fg={theme.text}>{message.task.description}</span>
-        </text>
-        {detailLine ? (
-          <box marginTop={1}>
-            <text>
-              <span fg={theme.mutedText}>{detailLine}</span>
-            </text>
-          </box>
-        ) : null}
-        {visibleActiveToolCalls.length > 0 ? (
-          <box marginTop={1} flexDirection="column">
-            <text>
-              <span fg={theme.mutedText}>live tools</span>
-            </text>
-            {visibleActiveToolCalls.map((toolCall) => (
-              <CompactToolRow key={toolCall.id} toolCall={toolCall} theme={theme} />
-            ))}
-          </box>
-        ) : null}
-        {usageLine ? (
-          <box marginTop={detailLine || visibleActiveToolCalls.length > 0 ? 1 : 1}>
-            <text>
-              <span fg={theme.mutedText}>{usageLine}</span>
-            </text>
-          </box>
-        ) : null}
-      </box>
-    </box>
+      ) : null}
+      {visibleActiveToolCalls.length > 0 ? (
+        <box marginTop={1} flexDirection="column">
+          <text>
+            <span fg={theme.mutedText}>live tools</span>
+          </text>
+          {visibleActiveToolCalls.map((toolCall) => (
+            <CompactToolRow key={toolCall.id} toolCall={toolCall} theme={theme} />
+          ))}
+        </box>
+      ) : null}
+      {usageLine ? (
+        <box marginTop={1}>
+          <text>
+            <span fg={theme.mutedText}>{usageLine}</span>
+          </text>
+        </box>
+      ) : null}
+    </MessageFrame>
   )
 }
 
 function ErrorMessage({
   message,
+  presentation,
   theme,
   layout,
 }: {
   message: ErrorDisplayMessage
-  theme: ReturnType<typeof useThemePalette>
+  presentation: MessagePresentation
+  theme: ThemePalette
   layout: MessageLayout
 }) {
   return (
-    <box
-      paddingX={layout.horizontalPadding}
-      marginBottom={1}
-      alignItems="center"
+    <MessageFrame
+      align={presentation.frame.alignment}
+      backgroundColor={getFrameBackgroundColor(presentation.frame.surface, theme)}
+      borderColor={getFrameBorderColor(presentation, theme)}
+      horizontalPadding={layout.horizontalPadding}
+      maxWidth={layout.columnWidth}
+      paddingX={layout.compact ? 1 : 2}
+      paddingY={layout.sectionPaddingY}
+      width={getFrameWidth(presentation, layout)}
     >
-      <box
-        width="100%"
-        maxWidth={layout.columnWidth}
-        border
-        borderStyle="rounded"
-        borderColor={theme.error}
-        backgroundColor={theme.surfaceAlt}
-        paddingX={layout.compact ? 1 : 2}
-        paddingY={layout.sectionPaddingY}
-      >
-        <box flexDirection="row" gap={1} marginBottom={layout.metaGapBottom}>
-          <text>
-            <span fg={theme.error}>
-              <strong>{message.recoverable ? "error" : "fatal"}</strong>
-            </span>
-          </text>
-          <text>
-            <span fg={theme.mutedText}>{formatTime(message.timestamp)}</span>
-          </text>
-        </box>
-        <text>
-          <span fg={theme.error}>{message.text}</span>
-        </text>
-      </box>
-    </box>
+      <MessageHeader
+        compact={layout.compact}
+        marginBottom={layout.metaGapBottom}
+        model={presentation.header}
+        theme={theme}
+      />
+      <text>
+        <span fg={theme.error}>{message.text}</span>
+      </text>
+    </MessageFrame>
   )
 }
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
+function getFrameWidth(presentation: MessagePresentation, layout: MessageLayout): number | "100%" {
+  return presentation.frame.width === "user" ? layout.userBubbleWidth : "100%"
+}
+
+function getFrameBackgroundColor(
+  surface: MessagePresentation["frame"]["surface"],
+  theme: ThemePalette,
+): string | undefined {
+  switch (surface) {
+    case "none":
+      return undefined
+    case "surface":
+      return theme.surface
+    case "surfaceAlt":
+      return theme.surfaceAlt
+    case "userSurface":
+      return theme.userSurface
+    case "toolSurface":
+      return theme.toolSurface
+  }
+}
+
+function getFrameBorderColor(presentation: MessagePresentation, theme: ThemePalette): string {
+  switch (presentation.frame.border) {
+    case "subtle":
+      return theme.borderSubtle
+    case "strong":
+      return theme.borderStrong
+    case "error":
+      return theme.error
+    case "status":
+      return getStatusToneColor(presentation.frame.borderTone ?? "primary", theme)
+  }
 }
 
 function getStatusToneColor(
   tone: StatusTone,
-  theme: ReturnType<typeof useThemePalette>,
+  theme: ThemePalette,
 ): string {
   switch (tone) {
     case "warning":

@@ -53,6 +53,7 @@ describe("MessageArea diff rendering", () => {
     expect(frame).toContain("modified /tmp/example.ts")
     expect(frame).toContain("const before = 1")
     expect(frame).toContain("const after = 2")
+    expect(getLineContaining(frame, "tool")).toContain("│")
   })
 
   it("switches diff layouts when the diff mode changes", async () => {
@@ -194,4 +195,12 @@ async function renderFrame(testSetup: Awaited<ReturnType<typeof testRender>>): P
   })
 
   return testSetup.captureCharFrame()
+}
+
+function getLineContaining(frame: string, text: string): string {
+  const line = frame.split("\n").find((entry) => entry.includes(text))
+
+  expect(line).toBeDefined()
+
+  return line!
 }

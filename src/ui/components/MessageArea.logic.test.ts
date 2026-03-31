@@ -2,8 +2,13 @@ import { describe, expect, it } from "bun:test"
 import { MessageUUID, type SpawnedTask, type ToolCall } from "#sdk/types"
 import type { DisplayMessage, ThinkingDisplayMessage } from "#state/types"
 import {
+  formatMessageTimestamp,
+  getMessageFrameIntent,
   formatTaskKindLabel,
   formatTodoSummaryLine,
+  getMessageHeaderModel,
+  getMessagePresentation,
+  getMessageTier,
   getToolCallDiffFileChange,
   getTaskContextLabel,
   formatTaskUsage,
@@ -15,41 +20,74 @@ import {
   getTodoProgress,
   mergeConsecutiveThinkingMessages,
   normalizeToolLabel,
-  shouldShowAssistantResponseDivider,
 } from "#ui/components/MessageArea.logic"
 
-describe("shouldShowAssistantResponseDivider", () => {
-  it("shows a divider when an assistant turn follows a user turn", () => {
-    const messages = [
-      createUserMessage("u-1"),
-      createAssistantMessage("a-1"),
-    ] satisfies readonly DisplayMessage[]
+describe("message presentation helpers", () => {
+  it("maps semantic message kinds into the shared primary, secondary, and tertiary tiers", () => {
+    const cases = [
+      [createUserMessage("u-1"), "primary"],
+      [createToolCallMessage("tool-1", "Read"), "primary"],
+      [createTaskMessage("task-1"), "primary"],
+      [createErrorMessage("e-1"), "primary"],
+      [createAssistantMessage("a-1"), "secondary"],
+      [createSystemMessage("s-1"), "secondary"],
+      [createThinkingMessage("t-1"), "tertiary"],
+    ] as const satisfies readonly (readonly [DisplayMessage, ReturnType<typeof getMessageTier>])[]
 
-    expect(shouldShowAssistantResponseDivider(messages, 1)).toBe(true)
+    for (const [message, expectedTier] of cases) {
+      expect(getMessageTier(message)).toBe(expectedTier)
+    }
   })
 
-  it("ignores thinking, tool, task, system, and error rows between conversational turns", () => {
-    const messages = [
-      createUserMessage("u-1"),
-      createThinkingMessage("t-1"),
-      createToolCallMessage("tool-1", "Read"),
-      createTaskMessage("task-1"),
-      createSystemMessage("s-1"),
-      createErrorMessage("e-1"),
-      createAssistantMessage("a-1"),
-    ] satisfies readonly DisplayMessage[]
+  it("derives assistant headers with scoped context and streaming state", () => {
+    const assistantMessage = {
+      kind: "assistant",
+      uuid: MessageUUID("a-1"),
+      text: "response",
+      isStreaming: true,
+      timestamp: new Date("2026-03-30T10:00:01Z"),
+      taskId: null,
+      parentToolUseId: null,
+    } satisfies DisplayMessage
 
-    expect(shouldShowAssistantResponseDivider(messages, 6)).toBe(true)
+    expect(
+      getMessageHeaderModel(assistantMessage, "subagent: Inspect command routing"),
+    ).toEqual({
+      label: "claude",
+      labelEmphasis: "regular",
+      labelTone: "muted",
+      contextLabel: "subagent: Inspect command routing",
+      timestamp: formatMessageTimestamp(assistantMessage.timestamp),
+      indicator: null,
+      streamingTone: "primary",
+    })
   })
 
-  it("does not show a divider between consecutive assistant rows", () => {
-    const messages = [
-      createAssistantMessage("a-1"),
-      createSystemMessage("s-1"),
-      createAssistantMessage("a-2"),
-    ] satisfies readonly DisplayMessage[]
+  it("keeps user frames right-aligned and task frames status-aware", () => {
+    expect(getMessageFrameIntent(createUserMessage("u-1"))).toEqual({
+      alignment: "right",
+      width: "user",
+      surface: "userSurface",
+      border: "strong",
+      borderTone: null,
+    })
 
-    expect(shouldShowAssistantResponseDivider(messages, 2)).toBe(false)
+    expect(getMessagePresentation(createTaskMessage("task-1"), null)).toMatchObject({
+      tier: "primary",
+      frame: {
+        alignment: "left",
+        width: "column",
+        surface: "toolSurface",
+        border: "status",
+        borderTone: "warning",
+      },
+      header: {
+        label: "running",
+        contextLabel: "subagent",
+        labelTone: "warning",
+        indicator: { kind: "spinner", tone: "warning" },
+      },
+    })
   })
 })
 
@@ -298,7 +336,7 @@ describe("getMessageLayout", () => {
       horizontalPadding: 4,
       columnWidth: 104,
       userBubbleWidth: 81,
-      sectionPaddingY: 1,
+      sectionPaddingY: 0,
       metaGapBottom: 1,
     })
   })

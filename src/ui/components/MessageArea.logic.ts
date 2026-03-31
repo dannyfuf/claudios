@@ -11,6 +11,42 @@ import type { DisplayMessage, ThinkingDisplayMessage } from "#state/types"
 
 export type StatusTone = "warning" | "success" | "error" | "primary"
 
+export type MessageTier = "primary" | "secondary" | "tertiary"
+
+export type MessageHeaderTone = StatusTone | "muted"
+
+export type MessageHeaderIndicator =
+  | { readonly kind: "spinner"; readonly tone: StatusTone }
+  | {
+      readonly kind: "icon"
+      readonly icon: "✓" | "✗" | "■"
+      readonly tone: StatusTone
+    }
+
+export type MessageHeaderModel = {
+  readonly label: string
+  readonly labelEmphasis: "regular" | "strong"
+  readonly labelTone: MessageHeaderTone
+  readonly contextLabel: string | null
+  readonly timestamp: string
+  readonly indicator: MessageHeaderIndicator | null
+  readonly streamingTone: MessageHeaderTone | null
+}
+
+export type MessageFrameIntent = {
+  readonly alignment: "left" | "right"
+  readonly width: "column" | "user"
+  readonly surface: "none" | "surface" | "surfaceAlt" | "userSurface" | "toolSurface"
+  readonly border: "subtle" | "strong" | "status" | "error"
+  readonly borderTone: StatusTone | null
+}
+
+export type MessagePresentation = {
+  readonly tier: MessageTier
+  readonly frame: MessageFrameIntent
+  readonly header: MessageHeaderModel
+}
+
 export type MessageLayout = {
   readonly compact: boolean
   readonly horizontalPadding: number
@@ -65,31 +101,189 @@ export function getMessageLayout(width: number): MessageLayout {
   }
 }
 
-export function shouldShowAssistantResponseDivider(
-  messages: readonly DisplayMessage[],
-  index: number,
-): boolean {
-  const message = messages[index]
-  if (!message || message.kind !== "assistant") {
-    return false
+export function getMessageTier(message: DisplayMessage): MessageTier {
+  switch (message.kind) {
+    case "user":
+    case "tool_call":
+    case "task":
+    case "error":
+      return "primary"
+    case "assistant":
+    case "system":
+      return "secondary"
+    case "thinking":
+      return "tertiary"
   }
 
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const previousMessage = messages[cursor]
-    if (!previousMessage) {
-      continue
-    }
+  return assertNever(message)
+}
 
-    if (previousMessage.kind === "user") {
-      return true
-    }
+export function getMessageFrameIntent(message: DisplayMessage): MessageFrameIntent {
+  switch (message.kind) {
+    case "user":
+      return {
+        alignment: "right",
+        width: "user",
+        surface: "userSurface",
+        border: "strong",
+        borderTone: null,
+      }
+    case "tool_call":
+      return {
+        alignment: "left",
+        width: "column",
+        surface: "toolSurface",
+        border: "subtle",
+        borderTone: null,
+      }
+    case "task": {
+      const statusPresentation = getTaskStatusPresentation(message.task.status)
 
-    if (previousMessage.kind === "assistant") {
-      return false
+      return {
+        alignment: "left",
+        width: "column",
+        surface: "toolSurface",
+        border: "status",
+        borderTone: statusPresentation.tone,
+      }
     }
+    case "assistant":
+      return {
+        alignment: "left",
+        width: "column",
+        surface: "surface",
+        border: "subtle",
+        borderTone: null,
+      }
+    case "thinking":
+      return {
+        alignment: "left",
+        width: "column",
+        surface: "none",
+        border: "subtle",
+        borderTone: null,
+      }
+    case "system":
+      return {
+        alignment: "left",
+        width: "column",
+        surface: "none",
+        border: "subtle",
+        borderTone: null,
+      }
+    case "error":
+      return {
+        alignment: "left",
+        width: "column",
+        surface: "surfaceAlt",
+        border: "error",
+        borderTone: "error",
+      }
   }
 
-  return false
+  return assertNever(message)
+}
+
+export function getMessageHeaderModel(
+  message: DisplayMessage,
+  contextLabel: string | null,
+): MessageHeaderModel {
+  switch (message.kind) {
+    case "user":
+      return {
+        label: "you",
+        labelEmphasis: "regular",
+        labelTone: "muted",
+        contextLabel: null,
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: null,
+        streamingTone: null,
+      }
+    case "assistant":
+      return {
+        label: "claude",
+        labelEmphasis: "regular",
+        labelTone: "muted",
+        contextLabel,
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: null,
+        streamingTone: message.isStreaming ? "primary" : null,
+      }
+    case "thinking":
+      return {
+        label: "thinking",
+        labelEmphasis: "regular",
+        labelTone: "muted",
+        contextLabel,
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: null,
+        streamingTone: message.isStreaming ? "muted" : null,
+      }
+    case "tool_call":
+      return {
+        label: "tool",
+        labelEmphasis: "regular",
+        labelTone: "muted",
+        contextLabel,
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: null,
+        streamingTone: null,
+      }
+    case "system":
+      return {
+        label: "system",
+        labelEmphasis: "regular",
+        labelTone: "muted",
+        contextLabel: null,
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: null,
+        streamingTone: null,
+      }
+    case "task": {
+      const statusPresentation = getTaskStatusPresentation(message.task.status)
+
+      return {
+        label: message.task.status,
+        labelEmphasis: "strong",
+        labelTone: statusPresentation.tone,
+        contextLabel: formatTaskKindLabel(message.task),
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: statusPresentation,
+        streamingTone: null,
+      }
+    }
+    case "error":
+      return {
+        label: message.recoverable ? "error" : "fatal",
+        labelEmphasis: "strong",
+        labelTone: "error",
+        contextLabel: null,
+        timestamp: formatMessageTimestamp(message.timestamp),
+        indicator: null,
+        streamingTone: null,
+      }
+  }
+
+  return assertNever(message)
+}
+
+export function getMessagePresentation(
+  message: DisplayMessage,
+  contextLabel: string | null,
+): MessagePresentation {
+  return {
+    tier: getMessageTier(message),
+    frame: getMessageFrameIntent(message),
+    header: getMessageHeaderModel(message, contextLabel),
+  }
+}
+
+export function formatMessageTimestamp(date: Date): string {
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
 }
 
 export function mergeConsecutiveThinkingMessages(
@@ -392,5 +586,5 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 }
 
 function assertNever(value: never): never {
-  throw new Error(`Unhandled tool status: ${String(value)}`)
+  throw new Error(`Unhandled value: ${String(value)}`)
 }

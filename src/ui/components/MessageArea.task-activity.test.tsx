@@ -50,6 +50,7 @@ describe("MessageArea task activity", () => {
     expect(frame).toContain("Inspect slash command routing")
     expect(frame).toContain("Searching src/commands and ui picker modules")
     expect(frame).toContain("3.2s, 2 tools, 640 tokens")
+    expect(getLineContaining(frame, "running")).toContain("│")
   })
 
   it("renders completed spawned tasks as a final static state", async () => {
@@ -99,6 +100,7 @@ describe("MessageArea task activity", () => {
     expect(frame).toContain("Read")
     expect(frame).toContain("/src/index.ts")
     expect(frame).not.toContain("work log")
+    expect(getLineContaining(frame, "tool")).toContain("│")
   })
 
   it("hides the spawn tool row when a matching task row exists", async () => {
@@ -384,4 +386,12 @@ async function renderFrame(testSetup: Awaited<ReturnType<typeof testRender>>): P
   })
 
   return testSetup.captureCharFrame()
+}
+
+function getLineContaining(frame: string, text: string): string {
+  const line = frame.split("\n").find((entry) => entry.includes(text))
+
+  expect(line).toBeDefined()
+
+  return line!
 }

@@ -100,7 +100,12 @@ export function mergeConsecutiveThinkingMessages(
   for (const message of messages) {
     const previousMessage = merged.at(-1)
 
-    if (message.kind !== "thinking" || previousMessage?.kind !== "thinking") {
+    if (
+      message.kind !== "thinking" ||
+      previousMessage?.kind !== "thinking" ||
+      previousMessage.parentToolUseId !== message.parentToolUseId ||
+      previousMessage.taskId !== message.taskId
+    ) {
       merged.push(message)
       continue
     }

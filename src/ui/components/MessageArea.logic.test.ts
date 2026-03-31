@@ -80,6 +80,46 @@ describe("mergeConsecutiveThinkingMessages", () => {
 
     expect(mergeConsecutiveThinkingMessages(messages)).toEqual(messages)
   })
+
+  it("does not merge thinking rows from different agents (different parentToolUseId)", () => {
+    const agent1Thinking = {
+      ...createThinkingMessage("t-1", "Let me explore the codebase"),
+      parentToolUseId: "tool-agent-1",
+      taskId: "task-1",
+    } satisfies ThinkingDisplayMessage
+    const agent2Thinking = {
+      ...createThinkingMessage("t-2", "Let me explore the codebase"),
+      parentToolUseId: "tool-agent-2",
+      taskId: "task-2",
+    } satisfies ThinkingDisplayMessage
+
+    expect(mergeConsecutiveThinkingMessages([agent1Thinking, agent2Thinking])).toEqual([
+      agent1Thinking,
+      agent2Thinking,
+    ])
+  })
+
+  it("still merges thinking rows from the same agent (same parentToolUseId)", () => {
+    const t1 = {
+      ...createThinkingMessage("t-1", "First thought"),
+      parentToolUseId: "tool-agent-1",
+      taskId: "task-1",
+    } satisfies ThinkingDisplayMessage
+    const t2 = {
+      ...createThinkingMessage("t-2", "Second thought"),
+      parentToolUseId: "tool-agent-1",
+      taskId: "task-1",
+    } satisfies ThinkingDisplayMessage
+
+    expect(mergeConsecutiveThinkingMessages([t1, t2])).toEqual([
+      {
+        ...t1,
+        text: "First thought\nSecond thought",
+        timestamp: t2.timestamp,
+        isStreaming: t2.isStreaming,
+      },
+    ])
+  })
 })
 
 describe("tool previews", () => {

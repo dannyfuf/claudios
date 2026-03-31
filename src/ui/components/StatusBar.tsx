@@ -30,8 +30,10 @@ export function StatusBar() {
           : "VIM NORMAL"
   const modeTextColor = interactionMode === "normal" ? theme.primary : theme.success
 
+  const permissionMode = useConversationSelector((s) => s.permissionMode)
   const sessionBadge = getSessionBadge(sessionState, isCompact, theme)
   const startupBadge = getStartupBadge(startup, isCompact, theme)
+  const permissionBadge = getPermissionBadge(permissionMode, isCompact, theme)
 
   const helpKey = interactionMode === "plain" ? "Ctrl+/" : "?"
   const hints = isCompact
@@ -55,6 +57,7 @@ export function StatusBar() {
         />
         {startupBadge ? <StatusBadge badge={startupBadge} /> : null}
         {sessionBadge ? <StatusBadge badge={sessionBadge} /> : null}
+        {permissionBadge ? <StatusBadge badge={permissionBadge} /> : null}
       </box>
       <box flexDirection="row" gap={1} minWidth={0}>
         <text>
@@ -171,6 +174,19 @@ function getStartupBadge(
   }
 
   return null
+}
+
+function getPermissionBadge(
+  permissionMode: string,
+  isCompact: boolean,
+  theme: ReturnType<typeof useThemePalette>,
+): StatusBadgeModel | null {
+  if (permissionMode !== "plan") return null
+  return {
+    label: isCompact ? "plan" : "plan mode",
+    textColor: theme.warning,
+    loading: false,
+  }
 }
 
 function truncateEnd(value: string, maxLength: number): string {

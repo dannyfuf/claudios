@@ -1,4 +1,5 @@
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
+import { VimFocusFrame } from "#ui/components/VimFocusFrame"
 import { useThemePalette } from "#ui/hooks"
 
 type CompletionOption = {
@@ -55,12 +56,7 @@ export function CompletionOverlay(props: CompletionOverlayProps) {
         </box>
       ) : (
         <box padding={1}>
-          <box
-            border
-            borderStyle="rounded"
-            borderColor={props.focused ? theme.borderStrong : theme.borderSubtle}
-            onMouseDown={props.onFocusList}
-          >
+          <VimFocusFrame active={props.focused} onMouseDown={props.onFocusList}>
             <select
               options={[...props.options]}
               selectedIndex={props.selectedIndex}
@@ -74,7 +70,7 @@ export function CompletionOverlay(props: CompletionOverlayProps) {
                 props.onSelect(index)
               }}
             />
-          </box>
+          </VimFocusFrame>
         </box>
       )}
     </box>

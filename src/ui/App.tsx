@@ -28,7 +28,6 @@ import {
   shouldSubmitSlashSuggestion,
 } from "#commands/slash"
 import type { ParsedLocalSlashCommand, SlashCommandSuggestion } from "#commands/slash"
-import { getInteractionMode } from "#state/types"
 import {
   useAppController,
   useConversationService,
@@ -48,6 +47,7 @@ import { KeymapHelpContent } from "#ui/components/KeymapHelpOverlay"
 import { McpOverlayContent } from "#ui/components/McpOverlay"
 import { TodoOverlayContent } from "#ui/components/TodoOverlay"
 import { getSlashPickerQuery } from "#ui/slash-picker"
+import { matchesInteractionMode, useInteractionMode } from "#ui/vim-mode"
 import { listWorkspaceFiles } from "#ui/workspace-files"
 import { handleNormalModeKey, type VimPendingOperator } from "#ui/vim"
 import { resolvePickerKeyboardAction } from "#ui/picker-keyboard"
@@ -94,7 +94,7 @@ function AppContent() {
   const dialog = useDialog()
   const isDialogOpen = useDialogState((s) => s.isOpen)
   const vimEnabled = useConversationSelector((s) => s.vimEnabled)
-  const interactionMode = useConversationSelector(getInteractionMode)
+  const interactionMode = useInteractionMode()
   const currentModel = useConversationSelector((s) => s.model)
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
@@ -109,6 +109,7 @@ function AppContent() {
   const inputRef = useRef<InputRenderable | null>(null)
   const messageAreaRef = useRef<ScrollBoxRenderable | null>(null)
   const pendingEscapeInterruptRef = useRef<number | null>(null)
+  const isNormalInteractionMode = matchesInteractionMode(interactionMode, "normal")
 
   const dialogTheme = useMemo(() => createDialogTheme(theme), [theme])
   const toasterOptions = useMemo(() => createToasterOptions(theme), [theme])
@@ -163,10 +164,10 @@ function AppContent() {
   }, [activeFileToken?.query, picker?.kind, picker?.options.length, slashPickerQuery])
 
   useEffect(() => {
-    if (interactionMode !== "normal") {
+    if (!isNormalInteractionMode) {
       setPendingOperator(null)
     }
-  }, [interactionMode])
+  }, [isNormalInteractionMode])
 
   useEffect(() => {
     if (sessionState.status !== "running" || isDialogOpen) {
@@ -225,6 +226,10 @@ function AppContent() {
       service.setVimMode("normal")
     }
   }, [service, vimEnabled])
+
+  const clearPendingEscapeInterrupt = useCallback(() => {
+    pendingEscapeInterruptRef.current = null
+  }, [])
 
   const applyModelChange = useCallback(
     async (nextModel: string): Promise<SetModelResult> => {
@@ -678,33 +683,16 @@ function AppContent() {
       return
     }
 
-    if (sessionState.status === "running") {
-      if (isDoubleEscapeKey(key)) {
-        pendingEscapeInterruptRef.current = null
-        interruptRunningRequest()
-        return
-      }
-
-      if (isEscapeKey(key) && !key.repeated) {
-        const now = Date.now()
-        const previousEscapeAt = pendingEscapeInterruptRef.current
-        pendingEscapeInterruptRef.current = now
-
-        if (
-          previousEscapeAt !== null &&
-          now - previousEscapeAt <= ESCAPE_INTERRUPT_WINDOW_MS
-        ) {
-          pendingEscapeInterruptRef.current = null
-          interruptRunningRequest()
-          return
-        }
-      } else if (!isEscapeKey(key)) {
-        pendingEscapeInterruptRef.current = null
-      }
+    if (sessionState.status === "running" && !isEscapeKey(key)) {
+      clearPendingEscapeInterrupt()
     }
 
     const keyStr = normalizeKeyBinding(getKeyBindingString(key))
-    if (key.repeated && (keyStr === "?" || keyStr === "ctrl+/") && (interactionMode === "normal" || interactionMode === "plain")) {
+    if (
+      key.repeated &&
+      (keyStr === "?" || keyStr === "ctrl+/") &&
+      matchesInteractionMode(interactionMode, ["normal", "plain"] as const)
+    ) {
       return
     }
 
@@ -715,11 +703,11 @@ function AppContent() {
 
     if (sessionState.status !== "awaiting_permission") {
       const keyConsumedByAction = action !== null && shouldSyncPromptTextFromKey(key)
-      if (interactionMode !== "normal" && shouldSyncPromptTextFromKey(key) && !keyConsumedByAction) {
+      if (!isNormalInteractionMode && shouldSyncPromptTextFromKey(key) && !keyConsumedByAction) {
         queueMicrotask(syncPromptTextFromInput)
       }
 
-      if (keyConsumedByAction && interactionMode !== "normal") {
+      if (keyConsumedByAction && !isNormalInteractionMode) {
         queueMicrotask(() => {
           if (inputRef.current) {
             inputRef.current.value = promptText
@@ -731,13 +719,16 @@ function AppContent() {
         const pickerAction = resolvePickerKeyboardAction(key, interactionMode)
         switch (pickerAction.kind) {
           case "move":
+            clearPendingEscapeInterrupt()
             setSelectedIndex((current) => {
               const next = current + pickerAction.delta
               return Math.max(0, Math.min(next, picker.options.length - 1))
             })
             return
           case "select":
-            if (interactionMode !== "normal") {
+            clearPendingEscapeInterrupt()
+
+            if (!isNormalInteractionMode) {
               return
             }
 
@@ -748,12 +739,14 @@ function AppContent() {
             selectPickerOption(selectedIndex)
             return
           case "close":
-            if (interactionMode === "normal" && vimEnabled) {
+            if (isNormalInteractionMode && vimEnabled) {
+              clearPendingEscapeInterrupt()
               service.setVimMode("insert")
               return
             }
             break
           case "setMode":
+            clearPendingEscapeInterrupt()
             service.setVimMode(pickerAction.mode)
             return
           case "none":
@@ -761,13 +754,17 @@ function AppContent() {
         }
       }
 
-      if (interactionMode === "normal" && !picker) {
+      if (isNormalInteractionMode && !picker) {
         if (key.name === "escape") {
-          setPendingOperator(null)
-          return
+          if (pendingOperator !== null) {
+            clearPendingEscapeInterrupt()
+            setPendingOperator(null)
+            return
+          }
         }
 
         if (isPromptTriggerKey(key, "/")) {
+          clearPendingEscapeInterrupt()
           setPendingOperator(null)
           service.setPromptText("/")
           service.setVimMode("insert")
@@ -776,6 +773,7 @@ function AppContent() {
 
         const vimResult = handleNormalModeKey(inputRef.current, key, pendingOperator)
         if (vimResult.handled) {
+          clearPendingEscapeInterrupt()
           setPendingOperator(vimResult.nextOperator)
           syncPromptTextFromInput()
           if (vimResult.enterInsertMode) {
@@ -787,7 +785,35 @@ function AppContent() {
     }
 
     if (action) {
+      clearPendingEscapeInterrupt()
       handleAction(action)
+      return
+    }
+
+    // Only unconsumed escape keys contribute to the interrupt window.
+    if (sessionState.status === "running") {
+      if (isDoubleEscapeKey(key)) {
+        clearPendingEscapeInterrupt()
+        interruptRunningRequest()
+        return
+      }
+
+      if (isEscapeKey(key) && !key.repeated) {
+        const now = Date.now()
+        const previousEscapeAt = pendingEscapeInterruptRef.current
+
+        if (
+          previousEscapeAt !== null &&
+          now - previousEscapeAt <= ESCAPE_INTERRUPT_WINDOW_MS
+        ) {
+          clearPendingEscapeInterrupt()
+          interruptRunningRequest()
+          return
+        }
+
+        pendingEscapeInterruptRef.current = now
+        return
+      }
     }
   })
 
@@ -818,7 +844,7 @@ function AppContent() {
             options={picker.options}
             selectedIndex={selectedIndex}
             loading={picker.kind === "file" ? picker.loading : false}
-            focused={interactionMode === "normal"}
+            focused={isNormalInteractionMode}
             onFocusList={focusCompletionList}
             onSelect={(index: number) => {
               setSelectedIndex(index)

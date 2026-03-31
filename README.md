@@ -267,6 +267,12 @@ claudios starts in **plain** mode, so you can type immediately without entering 
 | `I` | Insert at start of line |
 | `?` | Show keybindings help |
 
+### Vim-aware pickers and completion
+
+- Model and session pickers keep the filter active in plain mode and vim insert mode.
+- In vim normal mode, picker results become active. `Esc` from the filter moves to results, `i` returns to the filter, and `Esc` from results closes the picker.
+- Inline slash and file completion keep the composer active in plain/insert mode and move focus to the completion list in normal mode.
+
 ### Permission modal
 
 | Key | Action |
@@ -398,6 +404,7 @@ claudios/
 - **State:** `ConversationService` (Effect-TS) owns all conversation state. React subscribes via a callback registry — no shared mutable state leaks into the UI layer.
 - **SDK:** `#sdk/client.ts` adapts the `@anthropic-ai/claude-agent-sdk` — wraps session management, auth checks, and streaming query creation.
 - **UI:** OpenTUI (`@opentui/react`) renders the terminal layout. Components are standard React; OpenTUI handles the TTY rendering backend.
+- **Vim-aware surfaces:** This delivery stops at the Phase 1 helper layer (`src/ui/vim-mode.ts`, `src/ui/picker-surface.ts`, `src/ui/components/VimFocusFrame.tsx`). Global vim state stays in `ConversationService`, while per-surface focus stays local to the UI layer.
 - **Config:** Loaded once at startup via Zod schema. CLI flags override config values before they reach the service layer.
 
 ---

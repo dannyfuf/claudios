@@ -7,9 +7,10 @@
 import type { RefObject } from "react"
 import type { InputRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
-import { getInteractionMode, type StartupState } from "#state/types"
+import type { StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { useConversationService, useConversationSelector, useThemePalette } from "#ui/hooks"
+import { matchesInteractionMode, useInteractionMode } from "#ui/vim-mode"
 
 type PromptInputProps = {
   readonly canSubmit: boolean
@@ -24,7 +25,7 @@ export function PromptInput(props: PromptInputProps) {
   const service = useConversationService()
   const sessionState = useConversationSelector((s) => s.sessionState)
   const startup = useConversationSelector((s) => s.startup)
-  const interactionMode = useConversationSelector(getInteractionMode)
+  const interactionMode = useInteractionMode()
   const promptText = useConversationSelector((s) => s.promptText)
 
   const isEditingDisabled =
@@ -32,7 +33,7 @@ export function PromptInput(props: PromptInputProps) {
     sessionState.status === "awaiting_permission"
 
   const isFocused =
-    interactionMode !== "normal" &&
+    !matchesInteractionMode(interactionMode, "normal") &&
     sessionState.status !== "awaiting_permission" &&
     props.hasModalFocus !== true
 

@@ -143,6 +143,28 @@ describe("App slash picker", () => {
     expect(frame).toContain("<task>")
   })
 
+  it("moves slash completion selection after entering normal mode", async () => {
+    renderedApp = await renderTestApp({ vimEnabled: true, vimMode: "normal" })
+
+    let frame = await pressKeyAndRender(renderedApp.testSetup, "/")
+    expect(renderedApp.service.getState().vimMode).toBe("insert")
+    expect(frame).toContain("slash commands")
+
+    frame = await typeAndRender(renderedApp.testSetup, "c")
+    expect(renderedApp.service.getState().promptText).toBe("/c")
+    expect(frame).toContain("/clear")
+    expect(frame).toContain("/cost")
+
+    await pressKeyAndRender(renderedApp.testSetup, "escape")
+    expect(renderedApp.service.getState().vimMode).toBe("normal")
+
+    await pressKeyAndRender(renderedApp.testSetup, "j")
+    await pressKeyAndRender(renderedApp.testSetup, "enter")
+
+    expect(renderedApp.service.getState().promptText).toBe("/cost")
+    expect(renderedApp.service.getState().vimMode).toBe("insert")
+  })
+
   it("opens help from plain mode on ctrl+slash", async () => {
     renderedApp = await renderTestApp({ promptText: "hello", kittyKeyboard: true })
 
@@ -191,6 +213,29 @@ describe("App slash picker", () => {
 
     await pressKeyAndRender(renderedApp.testSetup, "escape")
 
+    expect(interruptCalls).toBe(1)
+  })
+
+  it("only counts unconsumed escape presses toward request interruption", async () => {
+    let interruptCalls = 0
+    renderedApp = await renderTestApp({
+      promptText: "hello",
+      vimEnabled: true,
+      vimMode: "normal",
+      sessionState: { status: "running" },
+      onInterrupt: async () => {
+        interruptCalls += 1
+      },
+    })
+
+    await pressKeyAndRender(renderedApp.testSetup, "d")
+    await pressKeyAndRender(renderedApp.testSetup, "escape")
+    expect(interruptCalls).toBe(0)
+
+    await pressKeyAndRender(renderedApp.testSetup, "escape")
+    expect(interruptCalls).toBe(0)
+
+    await pressKeyAndRender(renderedApp.testSetup, "escape")
     expect(interruptCalls).toBe(1)
   })
 })

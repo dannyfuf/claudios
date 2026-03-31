@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/dannyfuf/claudios/pulls)
 
-**claudios** is a keyboard-driven TUI (terminal user interface) that wraps [Claude Code](https://claude.ai/download) with a richer, more ergonomic interface. It adds vim keybindings, session management, syntax-highlighted diffs, multiple themes, slash commands, and real-time token/cost tracking — all in your terminal.
+**claudios** is a keyboard-driven TUI (terminal user interface) that wraps [Claude Code](https://claude.ai/download) with a richer, more ergonomic interface. It adds optional vim keybindings, session management, syntax-highlighted diffs, multiple themes, slash commands, mouse-friendly pickers, and real-time token/cost tracking — all in your terminal.
 
 ---
 
@@ -35,12 +35,12 @@
 ## Features
 
 - **4-zone layout** — header (model, session, tokens, cost), scrollable message area, prompt input, and status bar
-- **Vim mode** — switch between insert and normal mode; navigate and trigger actions without the mouse
-- **Slash commands** — `/new`, `/sessions`, `/model`, `/theme`, `/diff`, `/perm`, `/keys`, `/clear`, `/q`
+- **Optional vim mode** — start in plain typing mode and toggle vim insert/normal behavior with `/vim`
+- **Slash commands** — `/new`, `/sessions`, `/model`, `/theme`, `/diff`, `/thinking`, `/perm`, `/vim`, `/keys`, `/clear`, `/q`
 - **Session management** — list, resume, and browse transcripts of past conversations
 - **Multiple themes** — `dark` (default), `tokyo-night`, `nord`, `forest`
 - **Syntax-highlighted diffs** — toggle between unified and split view
-- **Tool call display** — see every tool call and spawned sub-task in real time
+- **Chronological activity timeline** — see thinking, tool calls, and spawned sub-tasks in execution order
 - **Token & cost tracking** — live usage stats in the header
 - **External editor support** — open your `$EDITOR` to compose long prompts
 - **Configurable keybindings** — remap any action via `config.json`
@@ -198,7 +198,9 @@ Type `/` in the prompt to trigger a command. A completion overlay will appear as
 | `/model <name>` | Switch model (e.g. `/model opus`) |
 | `/theme <name>` | Switch theme (e.g. `/theme tokyo-night`) |
 | `/diff` | Toggle between unified and split diff view |
+| `/thinking [on\|off\|toggle]` | Show or hide thinking rows |
 | `/perm <mode>` | Change permission mode (e.g. `/perm acceptEdits`) |
+| `/vim [on\|off\|toggle]` | Enable, disable, or toggle vim mode |
 | `/keys` | Show the keybindings help overlay |
 | `/clear` | Clear the message area |
 | `/q` | Quit claudios |
@@ -207,7 +209,7 @@ Type `/` in the prompt to trigger a command. A completion overlay will appear as
 
 ## Keybindings
 
-claudios has two modes: **insert** (typing) and **normal** (navigation). Press `Escape` to enter normal mode, `i` to return to insert mode.
+claudios starts in **plain** mode, so you can type immediately without entering vim first. Run `/vim` to enable vim mode at runtime. When vim mode is enabled, `Escape` enters normal mode and `i` returns to insert mode.
 
 ### Global (any mode)
 
@@ -226,14 +228,20 @@ claudios has two modes: **insert** (typing) and **normal** (navigation). Press `
 | `Home` | Scroll to top |
 | `End` | Scroll to bottom |
 
-### Insert mode
+### Plain mode (default)
+
+| Key | Action |
+|---|---|
+| `Enter` | Submit prompt |
+
+### Vim insert mode
 
 | Key | Action |
 |---|---|
 | `Enter` | Submit prompt |
 | `Escape` | Enter normal mode |
 
-### Normal mode
+### Vim normal mode
 
 | Key | Action |
 |---|---|
@@ -281,6 +289,7 @@ If the file doesn't exist, all defaults apply. The file is created lazily — yo
   "defaultModel": "sonnet",
   "defaultPermissionMode": "bypassPermissions",
   "diffMode": "unified",
+  "showThinking": true,
   "claudePath": "claude",
   "keybindings": {}
 }
@@ -295,6 +304,7 @@ If the file doesn't exist, all defaults apply. The file is created lazily — yo
 | `defaultModel` | `string` | `"sonnet"` | Default Claude model. Any model name Claude Code accepts (e.g. `opus`, `haiku`) |
 | `defaultPermissionMode` | `string` | `"bypassPermissions"` | Permission mode: `default`, `acceptEdits`, `bypassPermissions`, `plan`, `dontAsk` |
 | `diffMode` | `string` | `"unified"` | Diff display style: `unified` or `split` |
+| `showThinking` | `boolean` | `true` | Whether thinking rows are visible in the transcript by default |
 | `claudePath` | `string` | `"claude"` | Path to the Claude Code CLI binary |
 | `keybindings` | `object` | `{}` | Action → key overrides (see [Keybindings](#keybindings)) |
 
@@ -429,4 +439,3 @@ Please [open an issue](https://github.com/dannyfuf/claudios/issues) with:
 ## License
 
 MIT — see [LICENSE](LICENSE).
-

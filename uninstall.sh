@@ -5,8 +5,8 @@ set -eu
 INSTALL_DIR="${CLAUDIOS_INSTALL_DIR:-$HOME/.local/share/claudios}"
 BIN_DIR="${CLAUDIOS_BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${CLAUDIOS_CONFIG_DIR:-$HOME/.config/claudios}"
-CURRENT_BIN="$BIN_DIR/bclaud"
-LEGACY_BIN="$BIN_DIR/claudios"
+CURRENT_BIN="$BIN_DIR/claudios"
+LEGACY_BIN="$BIN_DIR/bclaud"
 
 info()    { printf '\033[0;34m[claudios]\033[0m %s\n' "$*"; }
 success() { printf '\033[0;32m[claudios]\033[0m %s\n' "$*"; }

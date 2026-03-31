@@ -6,7 +6,7 @@ set -eu
 REPO="https://github.com/dannyfuf/claudios.git"
 INSTALL_DIR="${CLAUDIOS_INSTALL_DIR:-$HOME/.local/share/claudios}"
 BIN_DIR="${CLAUDIOS_BIN_DIR:-$HOME/.local/bin}"
-BINARY_NAME="bclaud"
+BINARY_NAME="claudios"
 
 # ---------------------------------------------------------------------------
 # Helpers

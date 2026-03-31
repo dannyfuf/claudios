@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "bclaud": "./dist/index.js"
+    "claudios": "./dist/index.js"
   },
   "scripts": {
     "start": "bun run src/index.tsx",

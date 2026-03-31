@@ -73,7 +73,7 @@ The script will:
 3. Warn if [Claude Code CLI](https://claude.ai/download) is not found
 4. Clone the repo to `~/.local/share/claudios`
 5. Build the project (`bun install && bun run build`)
-6. Symlink the `bclaud` binary to `~/.local/bin/bclaud`
+6. Symlink the `claudios` binary to `~/.local/bin/claudios`
 7. Add `~/.local/bin` to your `$PATH` if needed
 
 > **Note:** The installer is idempotent — running it again will update an existing installation.
@@ -103,7 +103,7 @@ bun run build
 
 # 4. Link the binary globally
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/dist/index.js" ~/.local/bin/bclaud
+ln -sf "$(pwd)/dist/index.js" ~/.local/bin/claudios
 
 # 5. Make sure ~/.local/bin is in your PATH
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
@@ -122,7 +122,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 echo 'export ANTHROPIC_API_KEY="sk-ant-..."' >> ~/.zshrc
 
 # Launch
-bclaud
+claudios
 ```
 
 > **Claude Code CLI must be installed and authenticated** before launching claudios.
@@ -134,30 +134,30 @@ bclaud
 
 ```sh
 # Launch TUI chat (default)
-bclaud
+claudios
 
 # Start in a specific working directory
-bclaud --cwd /path/to/project
+claudios --cwd /path/to/project
 
 # Override the default model
-bclaud --model opus
+claudios --model opus
 
 # Resume a previous session
-bclaud --resume <session-id>
+claudios --resume <session-id>
 
 # Override permission mode
-bclaud --permission-mode acceptEdits
+claudios --permission-mode acceptEdits
 
 # Session management (no TUI)
-bclaud sessions list
-bclaud sessions show <session-id>
+claudios sessions list
+claudios sessions show <session-id>
 
 # View the resolved configuration
-bclaud config
+claudios config
 
 # Help & version
-bclaud --help
-bclaud --version
+claudios --help
+claudios --version
 ```
 
 ---
@@ -301,7 +301,7 @@ If the file doesn't exist, all defaults apply. The file is created lazily — yo
 ### View resolved config
 
 ```sh
-bclaud config
+claudios config
 ```
 
 This prints the config path and all resolved values (including defaults).
@@ -414,14 +414,14 @@ Please [open an issue](https://github.com/dannyfuf/claudios/issues) with:
 
 | Symptom | Solution |
 |---|---|
-| `bclaud: command not found` | Add `~/.local/bin` to `$PATH`: `export PATH="$HOME/.local/bin:$PATH"` |
+| `claudios: command not found` | Add `~/.local/bin` to `$PATH`: `export PATH="$HOME/.local/bin:$PATH"` |
 | `Claude Code authentication required` after install | The installer writes `claudePath` to `~/.config/claudios/config.json`. If missing, run `which claude` and add `"claudePath": "/path/to/claude"` to that file |
 | `Claude Code authentication required` (fresh setup) | Run `claude auth login`, then retry |
 | `ANTHROPIC_API_KEY not set` | Export the key: `export ANTHROPIC_API_KEY="sk-ant-..."` |
 | Claude Code CLI not found | Install from [claude.ai/download](https://claude.ai/download) |
 | TUI renders incorrectly / garbled | Use a true-color terminal. Try setting `TERM=xterm-256color` |
 | Bun version too old | Run `bun upgrade` |
-| Config not loading | Run `bclaud config` to see the resolved path and any parse errors |
+| Config not loading | Run `claudios config` to see the resolved path and any parse errors |
 | Build fails after update | Delete `dist/` and re-run `bun run build` |
 
 ---

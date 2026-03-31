@@ -8,7 +8,7 @@
 import { z } from "zod"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { readFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { DEFAULT_THEME_NAME, THEME_NAMES } from "#ui/theme"
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,7 @@ export const ConfigSchema = z.object({
   diffMode: z.enum(["unified", "split"]).default("unified"),
   showThinking: z.boolean().default(true),
   claudePath: z.string().default("claude"),
+  vimEnabled: z.boolean().default(false),
 })
 
 export type AppConfig = z.infer<typeof ConfigSchema>
@@ -84,4 +85,9 @@ export async function loadConfig(): Promise<ConfigLoadResult> {
   }
 
   return { ok: true, config: result.data }
+}
+
+export async function saveConfig(config: AppConfig): Promise<void> {
+  await mkdir(CONFIG_DIR, { recursive: true })
+  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8")
 }

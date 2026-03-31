@@ -1,0 +1,208 @@
+import { afterEach, describe, expect, it } from "bun:test"
+import { testRender } from "@opentui/react/test-utils"
+import { act } from "react"
+import type { SlashCommand, ModelInfo, AccountInfo } from "#sdk/types"
+import { DEFAULT_CONFIG } from "#config/schema"
+import { Keymap } from "#commands/keymap"
+import { ConversationService } from "#state/conversation-service"
+import { initialConversationState, type ConversationState, type VimMode } from "#state/types"
+import {
+  AppControllerProvider,
+  ConfigProvider,
+  ConversationServiceProvider,
+  KeymapProvider,
+  type AppController,
+} from "#ui/hooks"
+import { App } from "#ui/App"
+
+const TEST_ACCOUNT: AccountInfo = {
+  email: "test@example.com",
+  apiProvider: "firstParty",
+}
+
+const TEST_MODELS: readonly ModelInfo[] = [
+  {
+    value: "sonnet",
+    displayName: "Sonnet",
+    description: "Balanced test model",
+  },
+] as const
+
+const TEST_SDK_COMMANDS: readonly SlashCommand[] = [
+  {
+    name: "plan",
+    description: "Create a step-by-step plan",
+    argumentHint: "<task>",
+  },
+  {
+    name: "review",
+    description: "Review a file",
+    argumentHint: "<path>",
+  },
+] as const
+
+const TEST_APP_CONTROLLER: AppController = {
+  quit: async () => {
+    return
+  },
+  openEditor: async () => null,
+}
+
+let renderedApp: Awaited<ReturnType<typeof renderTestApp>> | null = null
+
+afterEach(() => {
+  if (renderedApp) {
+    act(() => {
+      renderedApp?.testSetup.renderer.destroy()
+    })
+    renderedApp = null
+  }
+})
+
+describe("App slash picker", () => {
+  it("opens, filters, broadens, and closes while typing in insert mode", async () => {
+    renderedApp = await renderTestApp()
+
+    let frame = await typeAndRender(renderedApp.testSetup, "/")
+    expect(frame).toContain("slash commands")
+    expect(frame).toContain("/q")
+    expect(frame).toContain("/clear")
+    expect(frame).toContain("/plan")
+
+    frame = await typeAndRender(renderedApp.testSetup, "p")
+    expect(renderedApp.service.getState().promptText).toBe("/p")
+    expect(frame).toContain("slash commands")
+    expect(frame).toMatch(/slash commands\s+2/)
+    expect(frame).toContain("/perm")
+    expect(frame).not.toContain("/clear")
+
+    frame = await typeAndRender(renderedApp.testSetup, "l")
+    expect(renderedApp.service.getState().promptText).toBe("/pl")
+    expect(frame).toMatch(/slash commands\s+1/)
+    expect(frame).not.toContain("/perm")
+
+    frame = await pressBackspaceAndRender(renderedApp.testSetup)
+    expect(renderedApp.service.getState().promptText).toBe("/p")
+    expect(frame).toMatch(/slash commands\s+2/)
+    expect(frame).toContain("/perm")
+
+    frame = await pressBackspaceAndRender(renderedApp.testSetup)
+    expect(renderedApp.service.getState().promptText).toBe("/")
+    expect(frame).toContain("/clear")
+
+    frame = await typeAndRender(renderedApp.testSetup, "perm ")
+    expect(renderedApp.service.getState().promptText).toBe("/perm ")
+    expect(frame).not.toContain("slash commands")
+  })
+
+  it("does not open when slash is typed after other insert-mode text", async () => {
+    renderedApp = await renderTestApp({ promptText: "hello" })
+
+    const frame = await typeAndRender(renderedApp.testSetup, "/")
+
+    expect(renderedApp.service.getState().promptText).toBe("hello/")
+    expect(frame).not.toContain("slash commands")
+  })
+
+  it("opens from normal mode and returns to insert mode when slash is pressed", async () => {
+    renderedApp = await renderTestApp({ vimMode: "normal" })
+
+    const frame = await pressKeyAndRender(renderedApp.testSetup, "/")
+
+    expect(renderedApp.service.getState().vimMode).toBe("insert")
+    expect(renderedApp.service.getState().promptText).toBe("/")
+    expect(frame).toContain("slash commands")
+    expect(frame).toContain("/q")
+  })
+})
+
+function createReadyConversationState(options?: {
+  readonly promptText?: string
+  readonly vimMode?: VimMode
+}): ConversationState {
+  return {
+    ...initialConversationState,
+    startup: {
+      auth: { status: "ready" },
+      resume: { status: "ready" },
+      metadata: { status: "ready" },
+    },
+    promptText: options?.promptText ?? "",
+    model: DEFAULT_CONFIG.defaultModel,
+    permissionMode: DEFAULT_CONFIG.defaultPermissionMode,
+    themeName: DEFAULT_CONFIG.theme,
+    diffMode: DEFAULT_CONFIG.diffMode,
+    vimMode: options?.vimMode ?? "insert",
+    availableModels: TEST_MODELS,
+    availableCommands: TEST_SDK_COMMANDS,
+    account: TEST_ACCOUNT,
+  }
+}
+
+async function renderTestApp(options?: {
+  readonly promptText?: string
+  readonly vimMode?: VimMode
+}) {
+  const service = new ConversationService(DEFAULT_CONFIG, createReadyConversationState(options))
+  const keymap = new Keymap(DEFAULT_CONFIG.keybindings)
+  const testSetup = await testRender(
+    <ConfigProvider value={DEFAULT_CONFIG}>
+      <KeymapProvider value={keymap}>
+        <ConversationServiceProvider value={service}>
+          <AppControllerProvider value={TEST_APP_CONTROLLER}>
+            <App />
+          </AppControllerProvider>
+        </ConversationServiceProvider>
+      </KeymapProvider>
+    </ConfigProvider>,
+    { width: 100, height: 30 },
+  )
+
+  await renderFrame(testSetup)
+
+  return { testSetup, service }
+}
+
+async function typeAndRender(
+  testSetup: Awaited<ReturnType<typeof testRender>>,
+  text: string,
+): Promise<string> {
+  await act(async () => {
+    await testSetup.mockInput.typeText(text)
+    await Bun.sleep(0)
+  })
+
+  return renderFrame(testSetup)
+}
+
+async function pressBackspaceAndRender(
+  testSetup: Awaited<ReturnType<typeof testRender>>,
+): Promise<string> {
+  await act(async () => {
+    testSetup.mockInput.pressBackspace()
+    await Bun.sleep(0)
+  })
+
+  return renderFrame(testSetup)
+}
+
+async function pressKeyAndRender(
+  testSetup: Awaited<ReturnType<typeof testRender>>,
+  key: string,
+): Promise<string> {
+  await act(async () => {
+    testSetup.mockInput.pressKey(key)
+    await Bun.sleep(0)
+  })
+
+  return renderFrame(testSetup)
+}
+
+async function renderFrame(testSetup: Awaited<ReturnType<typeof testRender>>): Promise<string> {
+  await act(async () => {
+    await Bun.sleep(0)
+    await testSetup.renderOnce()
+  })
+
+  return testSetup.captureCharFrame()
+}

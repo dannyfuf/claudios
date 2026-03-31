@@ -124,6 +124,41 @@ link_binary() {
 }
 
 # ---------------------------------------------------------------------------
+# Write config with absolute claude path
+#
+# When claudios runs as an installed binary it inherits the system PATH, not
+# the interactive shell PATH. Claude Code is often installed in a directory
+# that only appears after shell init files (.zshrc / .bashrc) are sourced,
+# so the SDK cannot find it. Persisting the absolute path at install time
+# sidesteps this entirely.
+# ---------------------------------------------------------------------------
+
+write_claude_path_config() {
+  CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
+
+  if [ -z "$CLAUDE_BIN" ]; then
+    warn "Could not detect Claude Code CLI path."
+    warn "If auth fails after launch, add this to ~/.config/claudios/config.json:"
+    warn '  { "claudePath": "/absolute/path/to/claude" }'
+    return 0
+  fi
+
+  CLAUDIOS_CONFIG_DIR="$HOME/.config/claudios"
+  CLAUDIOS_CONFIG_FILE="$CLAUDIOS_CONFIG_DIR/config.json"
+
+  mkdir -p "$CLAUDIOS_CONFIG_DIR"
+
+  if [ -f "$CLAUDIOS_CONFIG_FILE" ]; then
+    info "Config already exists at $CLAUDIOS_CONFIG_FILE"
+    info "Ensure it contains: \"claudePath\": \"$CLAUDE_BIN\""
+  else
+    info "Writing config: claudePath = $CLAUDE_BIN"
+    printf '{\n  "claudePath": "%s"\n}\n' "$CLAUDE_BIN" > "$CLAUDIOS_CONFIG_FILE"
+    success "Config written to $CLAUDIOS_CONFIG_FILE"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # PATH setup
 # ---------------------------------------------------------------------------
 
@@ -170,6 +205,7 @@ main() {
   install_or_update
   build
   link_binary
+  write_claude_path_config
   setup_path
 
   printf '\n'

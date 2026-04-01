@@ -1,6 +1,7 @@
 import type { StartupState } from "#state/types"
 import type { MessageLayout } from "#ui/components/MessageArea.logic"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
+import { getStartupAuthPresentation } from "#ui/startup-auth-presentation"
 import type { ThemePalette } from "#ui/theme"
 
 type EmptyStateProps = {
@@ -73,13 +74,15 @@ function getEmptyStateContent(
   readonly showSpinner: boolean
 } {
   if (startup.auth.status === "failed") {
+    const presentation = getStartupAuthPresentation(startup.auth)
+
     return {
-      badge: "auth required",
+      badge: presentation.badge,
       badgeTextColor: theme.error,
       context: "startup blocked",
-      title: "Claude Code needs authentication.",
+      title: presentation.title,
       description: startup.auth.message,
-      rows: ["Run `claude auth login`, then restart claudios."],
+      rows: presentation.rows,
       showSpinner: false,
     }
   }

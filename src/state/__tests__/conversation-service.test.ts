@@ -235,10 +235,11 @@ describe("ConversationService", () => {
     service.markAuthReady()
     expect(service.getState().startup.auth).toEqual({ status: "ready" })
 
-    service.markAuthFailed("auth missing")
+    service.markAuthFailed("auth missing", "auth")
     expect(service.getState().startup.auth).toEqual({
       status: "failed",
       message: "auth missing",
+      kind: "auth",
     })
     expect(service.getState().startup.resume).toEqual({ status: "idle" })
   })

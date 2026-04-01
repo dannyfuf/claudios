@@ -11,6 +11,7 @@ import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { formatTodoSummaryLine, getTodoProgress } from "#ui/components/MessageArea.logic"
 import { AppBadge } from "#ui/components/StyledBadge"
 import { useConversationSelector, useThemePalette } from "#ui/hooks"
+import { getStartupAuthPresentation } from "#ui/startup-auth-presentation"
 
 type StatusBarProps = {
   readonly onTodosClick?: () => void
@@ -183,8 +184,10 @@ function getStartupBadge(
   }
 
   if (startup.auth.status === "failed") {
+    const presentation = getStartupAuthPresentation(startup.auth)
+
     return {
-      label: isCompact ? "auth req" : "authentication required",
+      label: isCompact ? presentation.statusCompact : presentation.statusFull,
       textColor: theme.error,
       loading: false,
     }

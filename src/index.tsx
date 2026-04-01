@@ -130,13 +130,10 @@ async function main(): Promise<void> {
   await mountRenderer()
 
   void (async () => {
-    const authRequiredMessage =
-      "Claude Code authentication required. Run `claude auth login` to authenticate, then try again."
-
     try {
-      const isAuthenticated = await checkAuth(config)
-      if (!isAuthenticated) {
-        service.markAuthFailed(authRequiredMessage)
+      const authResult = await checkAuth(config)
+      if (authResult.status === "failed") {
+        service.markAuthFailed(authResult.message, authResult.failureKind)
         return
       }
 

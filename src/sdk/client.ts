@@ -5,6 +5,8 @@
  * interacts with the SDK only through this module.
  */
 
+import { existsSync } from "node:fs"
+
 import {
   query as sdkQuery,
   getSessionInfo as sdkGetSessionInfo,
@@ -24,6 +26,7 @@ import type {
   PermissionMode,
 } from "#sdk/types"
 import type { AppConfig } from "#config/schema"
+import { getErrorMessage } from "#shared/errors"
 
 // ---------------------------------------------------------------------------
 // Client
@@ -38,6 +41,29 @@ export type SupportedMetadata = {
   readonly commands: readonly SlashCommand[]
   readonly models: readonly ModelInfo[]
   readonly account: AccountInfo
+}
+
+export type AuthCheckResult =
+  | { readonly status: "ready" }
+  | {
+      readonly status: "failed"
+      readonly failureKind: "auth" | "binary" | "initialization"
+      readonly message: string
+    }
+
+type AuthCheckDependencies = {
+  readonly createQuery: (params: {
+    readonly prompt: string
+    readonly options: Options
+  }) => Query
+  readonly resolveCommand: (command: string) => string | undefined
+  readonly pathExists: (path: string) => boolean
+}
+
+const defaultAuthCheckDependencies: AuthCheckDependencies = {
+  createQuery: ({ prompt, options }) => sdkQuery({ prompt, options }),
+  resolveCommand: (command) => Bun.which(command) ?? undefined,
+  pathExists: (path) => existsSync(path),
 }
 
 /**
@@ -161,27 +187,171 @@ export async function renameSession(
 
 /**
  * Quick auth check: attempt to create a query with maxTurns=0.
- * Returns true if the SDK initializes without auth errors.
+ * Returns a structured startup result so callers can surface the real failure.
  */
-export async function checkAuth(config: AppConfig): Promise<boolean> {
+export async function checkAuth(
+  config: AppConfig,
+  dependencies: Partial<AuthCheckDependencies> = {},
+): Promise<AuthCheckResult> {
+  const authDependencies: AuthCheckDependencies = {
+    ...defaultAuthCheckDependencies,
+    ...dependencies,
+  }
+  const preflightFailure = preflightClaudeExecutable(config, authDependencies)
+  if (preflightFailure) {
+    return preflightFailure
+  }
+
   let q: Query | null = null
 
   try {
     const options = buildOptions(config, { maxTurns: 0 })
-    q = sdkQuery({ prompt: "test", options })
-    // Drain the generator — with maxTurns=0 it should yield a result quickly
-    for await (const msg of q) {
-      if (msg.type === "result" && "subtype" in msg) {
-        break
+    q = authDependencies.createQuery({ prompt: "test", options })
+
+    for await (const message of q as AsyncIterable<unknown>) {
+      if (isAuthStatusError(message)) {
+        return {
+          status: "failed",
+          failureKind: "auth",
+          message: "Claude Code authentication required.",
+        }
       }
-      if (msg.type === "auth_status" && "error" in msg && msg.error) {
-        return false
+
+      if (isResultSuccessMessage(message)) {
+        return { status: "ready" }
+      }
+
+      if (isResultErrorMessage(message)) {
+        return {
+          status: "failed",
+          failureKind: "initialization",
+          message: `Failed to initialize Claude Code: ${getResultErrorMessage(message)}`,
+        }
       }
     }
-    return true
-  } catch {
-    return false
+    return {
+      status: "failed",
+      failureKind: "initialization",
+      message: "Failed to initialize Claude Code: startup probe ended before Claude Code reported readiness.",
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      failureKind: "initialization",
+      message: `Failed to initialize Claude Code: ${getErrorMessage(error)}`,
+    }
   } finally {
     q?.close()
   }
+}
+
+function preflightClaudeExecutable(
+  config: AppConfig,
+  dependencies: AuthCheckDependencies,
+): Extract<AuthCheckResult, { readonly status: "failed" }> | null {
+  if (config.claudePath === "claude") {
+    if (dependencies.resolveCommand("claude")) {
+      return null
+    }
+
+    return {
+      status: "failed",
+      failureKind: "binary",
+      message: "Claude Code CLI could not be found on PATH.",
+    }
+  }
+
+  if (isPathLike(config.claudePath)) {
+    if (dependencies.pathExists(config.claudePath)) {
+      return null
+    }
+
+    return {
+      status: "failed",
+      failureKind: "binary",
+      message: `Configured Claude executable was not found at \`${config.claudePath}\`.`,
+    }
+  }
+
+  if (dependencies.resolveCommand(config.claudePath)) {
+    return null
+  }
+
+  return {
+    status: "failed",
+    failureKind: "binary",
+    message: `Configured Claude executable \`${config.claudePath}\` could not be found on PATH.`,
+  }
+}
+
+function isPathLike(value: string): boolean {
+  return value.includes("/") || value.startsWith(".") || value.startsWith("~")
+}
+
+function isAuthStatusError(
+  message: unknown,
+): message is { readonly type: "auth_status"; readonly error: string } {
+  return isRecord(message)
+    && message["type"] === "auth_status"
+    && typeof message["error"] === "string"
+    && message["error"].length > 0
+}
+
+function isResultSuccessMessage(
+  message: unknown,
+): message is {
+  readonly type: "result"
+  readonly subtype: "success"
+} {
+  return isRecord(message)
+    && message["type"] === "result"
+    && message["subtype"] === "success"
+}
+
+function isResultErrorMessage(
+  message: unknown,
+): message is {
+  readonly type: "result"
+  readonly subtype:
+    | "error_during_execution"
+    | "error_max_turns"
+    | "error_max_budget_usd"
+    | "error_max_structured_output_retries"
+  readonly errors?: readonly string[]
+} {
+  return isRecord(message)
+    && message["type"] === "result"
+    && (
+      message["subtype"] === "error_during_execution"
+      || message["subtype"] === "error_max_turns"
+      || message["subtype"] === "error_max_budget_usd"
+      || message["subtype"] === "error_max_structured_output_retries"
+    )
+}
+
+function getResultErrorMessage(message: {
+  readonly subtype: string
+  readonly errors?: readonly string[]
+}): string {
+  const firstError = message.errors?.find((error) => error.length > 0)
+  if (firstError) {
+    return firstError
+  }
+
+  switch (message.subtype) {
+    case "error_during_execution":
+      return "execution failed during startup"
+    case "error_max_turns":
+      return "startup probe exceeded max turns"
+    case "error_max_budget_usd":
+      return "startup probe exceeded the configured budget"
+    case "error_max_structured_output_retries":
+      return "startup probe exhausted structured output retries"
+    default:
+      return `startup probe failed with ${message.subtype}`
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

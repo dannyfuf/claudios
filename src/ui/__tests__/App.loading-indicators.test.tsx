@@ -151,6 +151,48 @@ describe("loading indicators", () => {
     expect(frame).not.toContain("running now")
   })
 
+  it("shows a Claude executable failure without auth login guidance", async () => {
+    renderedView = await renderAppView({
+      startup: {
+        auth: {
+          status: "failed",
+          kind: "binary",
+          message: "Configured Claude executable was not found at `/tmp/missing-claude`.",
+        },
+        resume: { status: "idle" },
+        metadata: { status: "idle" },
+      },
+    })
+
+    const frame = renderedView.testSetup.captureCharFrame()
+
+    expect(frame).toContain("Claude Code executable unavailable.")
+    expect(frame).toContain("Configured Claude executable was not found")
+    expect(frame).toContain("claudios config")
+    expect(frame).not.toContain("needs authentication")
+    expect(frame).not.toContain("claude auth login")
+  })
+
+  it("keeps login guidance for real auth failures", async () => {
+    renderedView = await renderAppView({
+      startup: {
+        auth: {
+          status: "failed",
+          kind: "auth",
+          message: "Claude Code authentication required.",
+        },
+        resume: { status: "idle" },
+        metadata: { status: "idle" },
+      },
+    })
+
+    const frame = renderedView.testSetup.captureCharFrame()
+
+    expect(frame).toContain("Claude Code needs authentication.")
+    expect(frame).toContain("claude auth login")
+    expect(frame).not.toContain("executable unavailable")
+  })
+
   it("shows whether the model picker input or results are active", async () => {
     renderedView = await renderModelPickerView({
       vimEnabled: true,
@@ -268,6 +310,7 @@ describe("loading indicators", () => {
 async function renderAppView(options?: {
   readonly promptText?: string
   readonly sessionState?: SessionState
+  readonly startup?: ConversationState["startup"]
 }) {
   const { App } = await import("#ui/App")
   const service = new ConversationService(DEFAULT_CONFIG, createReadyConversationState(options))
@@ -387,13 +430,14 @@ async function renderSessionPickerView(options?: {
 function createReadyConversationState(options?: {
   readonly promptText?: string
   readonly sessionState?: SessionState
+  readonly startup?: ConversationState["startup"]
 }): ConversationState {
   const baseState = {
     availableModels: TEST_MODELS,
     availableCommands: TEST_COMMANDS,
     account: TEST_ACCOUNT,
     ...(options?.sessionState ? { sessionState: options.sessionState } : {}),
-    startup: {
+    startup: options?.startup ?? {
       auth: { status: "ready" as const },
       resume: { status: "ready" as const },
       metadata: { status: "ready" as const },

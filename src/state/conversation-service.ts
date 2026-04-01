@@ -51,7 +51,6 @@ import {
   type TaskDisplayMessage,
   type ToolCallDisplayMessage,
   type StartupState,
-  type StartupTaskState,
   conversationReducer,
   initialConversationState,
 } from "#state/types"
@@ -82,6 +81,8 @@ type ConversationServiceDependencies = {
   readonly loadSupportedMetadata: typeof loadSupportedMetadataFromSDK
   readonly resumeSession: typeof resumeSession
 }
+
+type StartupAuthFailureKind = Extract<StartupState["auth"], { readonly status: "failed" }>["kind"]
 
 const defaultConversationServiceDependencies: ConversationServiceDependencies = {
   createQuery,
@@ -198,8 +199,11 @@ export class ConversationService {
     this.setStartupState("auth", { status: "ready" })
   }
 
-  markAuthFailed(message: string): void {
-    this.setStartupState("auth", { status: "failed", message })
+  markAuthFailed(
+    message: string,
+    kind: StartupAuthFailureKind = "initialization",
+  ): void {
+    this.setStartupState("auth", { status: "failed", kind, message })
     this.setStartupState("metadata", { status: "idle" })
     this.setStartupState("resume", { status: "idle" })
   }
@@ -218,7 +222,10 @@ export class ConversationService {
     }
   }
 
-  private setStartupState(key: keyof StartupState, state: StartupTaskState): void {
+  private setStartupState<TKey extends keyof StartupState>(
+    key: TKey,
+    state: StartupState[TKey],
+  ): void {
     this.dispatch({ type: "set_startup_state", key, state })
   }
 

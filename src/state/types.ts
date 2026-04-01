@@ -16,6 +16,7 @@ export type {
   InteractionMode,
   PlanModeState,
   SessionState,
+  StartupAuthState,
   StartupState,
   StartupTaskState,
   SystemDisplayMessage,

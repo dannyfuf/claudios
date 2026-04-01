@@ -94,8 +94,18 @@ export type StartupTaskState =
   | { readonly status: "ready" }
   | { readonly status: "failed"; readonly message: string }
 
+export type StartupAuthState =
+  | { readonly status: "idle" }
+  | { readonly status: "loading" }
+  | { readonly status: "ready" }
+  | {
+      readonly status: "failed"
+      readonly kind: "auth" | "binary" | "initialization"
+      readonly message: string
+    }
+
 export type StartupState = {
-  readonly auth: StartupTaskState
+  readonly auth: StartupAuthState
   readonly resume: StartupTaskState
   readonly metadata: StartupTaskState
 }

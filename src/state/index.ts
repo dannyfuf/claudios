@@ -17,6 +17,7 @@ export type {
   ErrorDisplayMessage,
   PlanModeState,
   SessionState,
+  StartupAuthState,
   StartupState,
   StartupTaskState,
   ConversationState,

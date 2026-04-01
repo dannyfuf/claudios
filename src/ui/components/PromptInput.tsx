@@ -10,6 +10,7 @@ import { useTerminalDimensions } from "@opentui/react"
 import { isPlanModeActive, type StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { useConversationService, useConversationSelector, useThemePalette } from "#ui/hooks"
+import { getStartupAuthPresentation } from "#ui/startup-auth-presentation"
 import { matchesInteractionMode, useInteractionMode } from "#ui/vim-mode"
 
 type PromptInputProps = {
@@ -127,7 +128,8 @@ function getStartupPlaceholder(
   isCompact: boolean,
 ): string {
   if (startup.auth.status === "failed") {
-    return isCompact ? "Claude auth required" : "Claude auth required before sending messages"
+    const presentation = getStartupAuthPresentation(startup.auth)
+    return isCompact ? presentation.placeholderCompact : presentation.placeholderFull
   }
 
   if (startup.resume.status === "loading") {

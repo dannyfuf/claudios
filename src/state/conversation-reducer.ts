@@ -12,7 +12,6 @@ import type {
   DisplayMessage,
   SessionState,
   StartupState,
-  StartupTaskState,
   VimMode,
 } from "./conversation-state"
 import type { PermissionModeName, StandardPermissionMode } from "#shared/permission-modes"
@@ -25,7 +24,7 @@ export type ConversationAction =
   | {
       readonly type: "set_startup_state"
       readonly key: keyof StartupState
-      readonly state: StartupTaskState
+      readonly state: StartupState[keyof StartupState]
     }
   | { readonly type: "append_message"; readonly message: DisplayMessage }
   | {

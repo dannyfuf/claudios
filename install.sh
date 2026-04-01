@@ -148,14 +148,42 @@ write_claude_path_config() {
 
   mkdir -p "$CLAUDIOS_CONFIG_DIR"
 
-  if [ -f "$CLAUDIOS_CONFIG_FILE" ]; then
-    info "Config already exists at $CLAUDIOS_CONFIG_FILE"
-    info "Ensure it contains: \"claudePath\": \"$CLAUDE_BIN\""
-  else
+  if [ ! -f "$CLAUDIOS_CONFIG_FILE" ]; then
     info "Writing config: claudePath = $CLAUDE_BIN"
     printf '{\n  "claudePath": "%s"\n}\n' "$CLAUDE_BIN" > "$CLAUDIOS_CONFIG_FILE"
     success "Config written to $CLAUDIOS_CONFIG_FILE"
+    return 0
   fi
+
+  info "Refreshing claudePath in $CLAUDIOS_CONFIG_FILE"
+
+  if CLAUDIOS_CONFIG_FILE="$CLAUDIOS_CONFIG_FILE" CLAUDE_BIN="$CLAUDE_BIN" bun -e '
+    import { readFileSync, writeFileSync } from "node:fs"
+
+    const configFile = process.env.CLAUDIOS_CONFIG_FILE
+    const claudeBin = process.env.CLAUDE_BIN
+
+    if (!configFile || !claudeBin) {
+      throw new Error("Missing installer environment")
+    }
+
+    const raw = readFileSync(configFile, "utf8")
+    const parsed = JSON.parse(raw)
+
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("Config must contain a JSON object")
+    }
+
+    const nextConfig = { ...parsed, claudePath: claudeBin }
+    writeFileSync(configFile, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8")
+  '; then
+    success "Updated claudePath in $CLAUDIOS_CONFIG_FILE"
+    return 0
+  fi
+
+  warn "Could not update $CLAUDIOS_CONFIG_FILE because it does not contain valid JSON."
+  warn "Your existing config was left unchanged."
+  warn "Fix the file or move it aside, then rerun the installer to refresh claudePath."
 }
 
 # ---------------------------------------------------------------------------

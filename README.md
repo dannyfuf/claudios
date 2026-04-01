@@ -128,7 +128,8 @@ claudios
 ```
 
 > **Claude Code CLI must be installed and authenticated** before launching claudios.
-> If you haven't done so: `claude auth login`
+> If startup says authentication is required, run `claude auth login`.
+> If startup says the Claude executable is unavailable, compare `claudios config` with `which claude`, then rerun the installer.
 
 ---
 
@@ -309,6 +310,8 @@ Config file location: `~/.config/claudios/config.json`
 
 If the file doesn't exist, all defaults apply. The file is created lazily — you only need to add the fields you want to override.
 
+When the installer can find `claude`, it writes the resolved absolute path into `claudePath`. Rerunning the installer refreshes that stored path without overwriting your other config keys.
+
 ```json
 {
   "theme": "dark",
@@ -342,6 +345,15 @@ claudios config
 ```
 
 This prints the config path and all resolved values (including defaults).
+
+### Verify Claude path
+
+```sh
+claudios config
+which claude
+```
+
+If `claudePath` does not match the current Claude Code binary, rerun the installer or update `~/.config/claudios/config.json` manually.
 
 ---
 
@@ -470,8 +482,9 @@ Please [open an issue](https://github.com/dannyfuf/claudios/issues) with:
 | Symptom | Solution |
 |---|---|
 | `claudios: command not found` | Add `~/.local/bin` to `$PATH`: `export PATH="$HOME/.local/bin:$PATH"` |
-| `Claude Code authentication required` after install | The installer writes `claudePath` to `~/.config/claudios/config.json`. If missing, run `which claude` and add `"claudePath": "/path/to/claude"` to that file |
-| `Claude Code authentication required` (fresh setup) | Run `claude auth login`, then retry |
+| `Claude Code authentication required` | Run `claude auth login`, then restart claudios |
+| `Claude Code executable unavailable` after install or update | Run `claudios config` and `which claude`, compare the configured `claudePath`, then rerun the installer to refresh it |
+| `Claude Code CLI could not be found on PATH` | Install Claude Code from [claude.ai/download](https://claude.ai/download), then rerun the installer so `claudePath` can be refreshed |
 | `ANTHROPIC_API_KEY not set` | Export the key: `export ANTHROPIC_API_KEY="sk-ant-..."` |
 | Claude Code CLI not found | Install from [claude.ai/download](https://claude.ai/download) |
 | TUI renders incorrectly / garbled | Use a true-color terminal. Try setting `TERM=xterm-256color` |

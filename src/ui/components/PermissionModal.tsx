@@ -12,15 +12,18 @@ import type { DialogId } from "@opentui-ui/dialog/react"
 import { useThemePalette } from "#ui/hooks"
 
 type PermissionDialogContentProps = {
+  readonly kind: "tool" | "plan_exit"
   readonly toolName: string
   readonly toolInput: Record<string, unknown>
+  readonly title?: string
+  readonly description?: string
   readonly resolve: (value: boolean) => void
   readonly dismiss: () => void
   readonly dialogId: DialogId
 }
 
 export function PermissionDialogContent(props: PermissionDialogContentProps) {
-  const { toolName, toolInput, resolve, dismiss, dialogId } = props
+  const { kind, toolName, toolInput, title, description, resolve, dismiss, dialogId } = props
   const theme = useThemePalette()
   const inputSummary = formatPermissionInput(toolInput)
 
@@ -45,13 +48,19 @@ export function PermissionDialogContent(props: PermissionDialogContentProps) {
       </box>
       <text>
         <span fg={theme.text}>
-          {toolName === "ExitPlanMode"
-            ? "Claude wants to exit plan mode."
-            : "Claude wants approval before running this tool."}
+          {title ??
+            (kind === "plan_exit"
+              ? "Claude wants to exit plan mode."
+              : "Claude wants approval before running this tool.")}
         </span>
       </text>
       <text>
-        <span fg={theme.mutedText}>Review the tool input, then allow or deny.</span>
+        <span fg={theme.mutedText}>
+          {description ??
+            (kind === "plan_exit"
+              ? "Approve to restore write access, or deny to stay in read-only planning mode."
+              : "Review the tool input, then allow or deny.")}
+        </span>
       </text>
       {inputSummary ? (
         <box

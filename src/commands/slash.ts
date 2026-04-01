@@ -13,15 +13,6 @@ type ParseVimCommandModeResult =
   | { readonly ok: true; readonly mode: VimCommandMode }
   | { readonly ok: false; readonly error: string }
 
-export const PERMISSION_MODES = [
-  "default",
-  "acceptEdits",
-  "bypassPermissions",
-  "plan",
-  "dontAsk",
-] as const
-
-export type PermissionModeName = (typeof PERMISSION_MODES)[number]
 export type VimCommandMode = "toggle" | "on" | "off"
 
 export const LOCAL_SLASH_COMMANDS = [
@@ -124,7 +115,7 @@ export const LOCAL_SLASH_COMMANDS = [
   {
     name: "plan",
     aliases: [],
-    description: "Toggle plan mode on/off",
+    description: "Enter plan mode or request exit approval",
     insertText: "/plan",
     acceptsArguments: false,
     submitOnExactMatch: true,
@@ -161,10 +152,6 @@ export type ComposerSubmission =
   | { readonly kind: "empty" }
   | { readonly kind: "local_command"; readonly command: ParsedLocalSlashCommand }
   | { readonly kind: "sdk_prompt" }
-
-export function isPermissionModeName(value: string): value is PermissionModeName {
-  return PERMISSION_MODES.some((mode) => mode === value)
-}
 
 export function parseVimCommandMode(args: readonly string[]): ParseVimCommandModeResult {
   if (args.length === 0) {

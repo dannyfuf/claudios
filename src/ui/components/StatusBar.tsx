@@ -6,7 +6,7 @@
 
 import { useTerminalDimensions } from "@opentui/react"
 import type { SpinnerOptions } from "opentui-spinner"
-import { getInteractionMode, type SessionState, type StartupState } from "#state/types"
+import { getInteractionMode, isPlanModeActive, type SessionState, type StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { formatTodoSummaryLine, getTodoProgress } from "#ui/components/MessageArea.logic"
 import { AppBadge } from "#ui/components/StyledBadge"
@@ -36,10 +36,10 @@ export function StatusBar({ onTodosClick }: StatusBarProps) {
           : "VIM NORMAL"
   const modeTextColor = interactionMode === "normal" ? theme.primary : theme.success
 
-  const permissionMode = useConversationSelector((s) => s.permissionMode)
+  const isPlanMode = useConversationSelector(isPlanModeActive)
   const sessionBadge = getSessionBadge(sessionState, isCompact, theme)
   const startupBadge = getStartupBadge(startup, isCompact, theme)
-  const permissionBadge = getPermissionBadge(permissionMode, isCompact, theme)
+  const permissionBadge = getPermissionBadge(isPlanMode, isCompact, theme)
 
   const todoItems = todoTracker?.items ?? []
   const allDone =
@@ -210,11 +210,11 @@ function getStartupBadge(
 }
 
 function getPermissionBadge(
-  permissionMode: string,
+  isPlanMode: boolean,
   isCompact: boolean,
   theme: ReturnType<typeof useThemePalette>,
 ): StatusBadgeModel | null {
-  if (permissionMode !== "plan") return null
+  if (!isPlanMode) return null
   return {
     label: isCompact ? "plan" : "plan mode",
     textColor: theme.warning,

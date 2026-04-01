@@ -7,7 +7,7 @@
 import type { RefObject } from "react"
 import type { InputRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
-import type { StartupState } from "#state/types"
+import { isPlanModeActive, type StartupState } from "#state/types"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { useConversationService, useConversationSelector, useThemePalette } from "#ui/hooks"
 import { matchesInteractionMode, useInteractionMode } from "#ui/vim-mode"
@@ -43,8 +43,7 @@ export function PromptInput(props: PromptInputProps) {
     }
   }
 
-  const permissionMode = useConversationSelector((s) => s.permissionMode)
-  const isPlanMode = permissionMode === "plan"
+  const isPlanMode = useConversationSelector(isPlanModeActive)
 
   const isCompact = width < 92
   const showsLoadingIndicator = isStartupLoading(startup)

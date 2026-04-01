@@ -12,22 +12,21 @@
  * +------------------------------------------+
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useKeyboard } from "@opentui/react"
-import type { InputRenderable, KeyEvent, ScrollBoxRenderable } from "@opentui/core"
-import { DialogProvider, useDialog, useDialogState } from "@opentui-ui/dialog/react"
-import type { ConfirmContext, PromptContext, AlertContext } from "@opentui-ui/dialog/react"
-import { Toaster, toast } from "@opentui-ui/toast/react"
-import { normalizeKeyBinding } from "#commands/keymap"
-import {
-  isPermissionModeName,
-  listSlashCommandSuggestions,
-  parseVimCommandMode,
-  PERMISSION_MODES,
-  resolveComposerSubmission,
-  shouldSubmitSlashSuggestion,
-} from "#commands/slash"
-import type { ParsedLocalSlashCommand, SlashCommandSuggestion } from "#commands/slash"
+import { useEffect, useMemo, useRef, useState } from "react"
+import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
+import { DialogProvider, useDialogState } from "@opentui-ui/dialog/react"
+import { Toaster } from "@opentui-ui/toast/react"
+import { getActiveFileToken, getPickerState, type Picker } from "#ui/app/picker-state"
+import { useAppActions } from "#ui/app/useAppActions"
+import { useAppDialogs } from "#ui/app/useAppDialogs"
+import { useAppKeyboard } from "#ui/app/useAppKeyboard"
+import { usePermissionDialog } from "#ui/app/usePermissionDialog"
+import { useWorkspaceFiles } from "#ui/app/useWorkspaceFiles"
+import { CompletionOverlay } from "#ui/components/CompletionOverlay"
+import { Header } from "#ui/components/Header"
+import { MessageArea } from "#ui/components/MessageArea"
+import { PromptInput } from "#ui/components/PromptInput"
+import { StatusBar } from "#ui/components/StatusBar"
 import {
   useAppController,
   useConversationService,
@@ -35,48 +34,10 @@ import {
   useKeymap,
   useThemePalette,
 } from "#ui/hooks"
-import { Header } from "#ui/components/Header"
-import { MessageArea } from "#ui/components/MessageArea"
-import { PromptInput } from "#ui/components/PromptInput"
-import { StatusBar } from "#ui/components/StatusBar"
-import { CompletionOverlay } from "#ui/components/CompletionOverlay"
-import { PermissionDialogContent } from "#ui/components/PermissionModal"
-import { ModelPickerDialogContent } from "#ui/components/ModelPickerOverlay"
-import { SessionPickerDialogContent } from "#ui/components/SessionPickerOverlay"
-import { KeymapHelpContent } from "#ui/components/KeymapHelpOverlay"
-import { McpOverlayContent } from "#ui/components/McpOverlay"
-import { TodoOverlayContent } from "#ui/components/TodoOverlay"
 import { getSlashPickerQuery } from "#ui/slash-picker"
+import { createToasterOptions } from "#ui/theme"
+import { type VimPendingOperator } from "#ui/vim"
 import { matchesInteractionMode, useInteractionMode } from "#ui/vim-mode"
-import { listWorkspaceFiles } from "#ui/workspace-files"
-import { handleNormalModeKey, type VimPendingOperator } from "#ui/vim"
-import { resolvePickerKeyboardAction } from "#ui/picker-keyboard"
-import { THEME_NAMES, isThemeName, createDialogTheme, createToasterOptions } from "#ui/theme"
-
-type FilePickerOption = {
-  readonly name: string
-  readonly description: string
-  readonly value: string
-}
-
-type Picker =
-  | {
-      readonly kind: "file"
-      readonly title: string
-      readonly loading: boolean
-      readonly options: readonly FilePickerOption[]
-    }
-  | {
-      readonly kind: "slash"
-      readonly title: string
-      readonly options: readonly SlashCommandSuggestion[]
-    }
-
-type SetModelResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly error: string }
-
-const ESCAPE_INTERRUPT_WINDOW_MS = 500
 
 export function App() {
   return (
@@ -91,73 +52,41 @@ function AppContent() {
   const service = useConversationService()
   const keymap = useKeymap()
   const theme = useThemePalette()
-  const dialog = useDialog()
-  const isDialogOpen = useDialogState((s) => s.isOpen)
-  const vimEnabled = useConversationSelector((s) => s.vimEnabled)
+  const isDialogOpen = useDialogState((state) => state.isOpen)
+  const vimEnabled = useConversationSelector((state) => state.vimEnabled)
   const interactionMode = useInteractionMode()
-  const currentModel = useConversationSelector((s) => s.model)
-  const sessionState = useConversationSelector((s) => s.sessionState)
-  const startup = useConversationSelector((s) => s.startup)
-  const promptText = useConversationSelector((s) => s.promptText)
-  const todoTracker = useConversationSelector((s) => s.todoTracker)
-  const availableCommands = useConversationSelector((s) => s.availableCommands)
-  const availableModels = useConversationSelector((s) => s.availableModels)
+  const sessionState = useConversationSelector((state) => state.sessionState)
+  const startup = useConversationSelector((state) => state.startup)
+  const promptText = useConversationSelector((state) => state.promptText)
+  const availableCommands = useConversationSelector((state) => state.availableCommands)
+  const availableModels = useConversationSelector((state) => state.availableModels)
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [workspaceFiles, setWorkspaceFiles] = useState<readonly string[]>([])
-  const [workspaceFilesLoaded, setWorkspaceFilesLoaded] = useState(false)
   const [pendingOperator, setPendingOperator] = useState<VimPendingOperator>(null)
   const inputRef = useRef<InputRenderable | null>(null)
   const messageAreaRef = useRef<ScrollBoxRenderable | null>(null)
   const pendingEscapeInterruptRef = useRef<number | null>(null)
   const isNormalInteractionMode = matchesInteractionMode(interactionMode, "normal")
 
-  const dialogTheme = useMemo(() => createDialogTheme(theme), [theme])
   const toasterOptions = useMemo(() => createToasterOptions(theme), [theme])
-
   const canSubmitPrompt =
     startup.auth.status === "ready" && startup.resume.status !== "loading"
-
+  const availableModelValues = useMemo(
+    () => availableModels.map((model) => model.value),
+    [availableModels],
+  )
   const activeFileToken = useMemo(() => getActiveFileToken(promptText), [promptText])
   const slashPickerQuery = useMemo(() => getSlashPickerQuery(promptText), [promptText])
+  const { workspaceFiles, workspaceFilesLoaded } = useWorkspaceFiles(activeFileToken)
 
-  const picker = useMemo<Picker | null>(() => {
-    if (activeFileToken) {
-      const query = activeFileToken.query.toLowerCase()
-      const options = workspaceFiles
-        .filter((filePath) => {
-          if (!query) return true
-          return filePath.toLowerCase().includes(query)
-        })
-        .slice(0, 50)
-        .map((filePath) => ({
-          name: `@${filePath}`,
-          description: filePath,
-          value: replaceActiveFileToken(promptText, activeFileToken.startIndex, filePath),
-        }))
-      const loading = !workspaceFilesLoaded
-
-      return loading || options.length > 0
-        ? { kind: "file" as const, title: "Files", loading, options }
-        : null
-    }
-
-    if (slashPickerQuery !== null) {
-      const options = listSlashCommandSuggestions(slashPickerQuery, availableCommands)
-
-      return options.length > 0
-        ? { kind: "slash" as const, title: "Slash Commands", options }
-        : null
-    }
-
-    return null
-  }, [
-    activeFileToken,
-    availableCommands,
-    promptText,
-    slashPickerQuery,
-    workspaceFiles,
-    workspaceFilesLoaded,
-  ])
+  const picker = useMemo<Picker | null>(
+    () => getPickerState({
+      promptText,
+      availableCommands,
+      workspaceFiles,
+      workspaceFilesLoaded,
+    }),
+    [availableCommands, promptText, workspaceFiles, workspaceFilesLoaded],
+  )
 
   useEffect(() => {
     setSelectedIndex(0)
@@ -175,646 +104,53 @@ function AppContent() {
     }
   }, [isDialogOpen, sessionState.status])
 
-  // When a permission request arrives, dismiss any open dialogs
   useEffect(() => {
-    if (sessionState.status === "awaiting_permission") {
-      dialog.closeAll()
+    if (startup.auth.status !== "ready") {
+      return
     }
-  }, [dialog, sessionState.status])
 
-  useEffect(() => {
-    if (startup.auth.status !== "ready") return
     void service.loadSupportedMetadata()
   }, [service, startup.auth.status])
 
-  useEffect(() => {
-    if (!activeFileToken || workspaceFilesLoaded) return
-
-    let cancelled = false
-
-    void listWorkspaceFiles(process.cwd())
-      .then((files) => {
-        if (!cancelled) {
-          setWorkspaceFiles(files)
-          setWorkspaceFilesLoaded(true)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setWorkspaceFiles([])
-          setWorkspaceFilesLoaded(true)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeFileToken, workspaceFilesLoaded])
-
-  // -------------------------------------------------------------------------
-  // Permission dialog (imperative, triggered by state change)
-  // -------------------------------------------------------------------------
-
   usePermissionDialog()
 
-  // -------------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------------
-
-  const focusCompletionList = useCallback(() => {
-    if (vimEnabled) {
-      service.setVimMode("normal")
-    }
-  }, [service, vimEnabled])
-
-  const clearPendingEscapeInterrupt = useCallback(() => {
-    pendingEscapeInterruptRef.current = null
-  }, [])
-
-  const applyModelChange = useCallback(
-    async (nextModel: string): Promise<SetModelResult> => {
-      try {
-        await service.setModel(nextModel)
-        toast.success(`Model set to ${nextModel}`)
-        return { ok: true }
-      } catch (error) {
-        return { ok: false, error: getErrorMessage(error) }
-      }
-    },
-    [service],
-  )
-
-  const openKeymapHelp = useCallback(() => {
-    dialog.closeAll()
-    void dialog.alert({
-      content: ({ dismiss, dialogId }: AlertContext) => (
-        <KeymapHelpContent
-          bindings={keymap.allBindings()}
-          dismiss={dismiss}
-          dialogId={dialogId}
-        />
-      ),
-      size: "large",
-    })
-  }, [dialog, keymap])
-
-  const interruptRunningRequest = useCallback(() => {
-    void service.interrupt().catch((error) => {
-      toast.error(`Failed to cancel request: ${getErrorMessage(error)}`)
-    })
-  }, [service])
-
-  const openSessionPicker = useCallback(async () => {
-    if (!vimEnabled) {
-      service.setVimMode("insert")
-    }
-
-    dialog.closeAll()
-
-    const selectedSessionId = await dialog.prompt<string>({
-      content: ({ resolve, dismiss, dialogId }: PromptContext<string>) => (
-        <SessionPickerDialogContent
-          resolve={resolve}
-          dismiss={dismiss}
-          dialogId={dialogId}
-        />
-      ),
-      size: "large",
-      closeOnEscape: true,
-    })
-
-    if (selectedSessionId) {
-      try {
-        await service.loadSession(selectedSessionId)
-        service.setVimMode("insert")
-      } catch (error) {
-        toast.error(`Failed to resume session: ${getErrorMessage(error)}`)
-      }
-    }
-  }, [dialog, service, vimEnabled])
-
-  const openModelPicker = useCallback(async () => {
-    if (!vimEnabled) {
-      service.setVimMode("insert")
-    }
-
-    dialog.closeAll()
-
-    const selectedModel = await dialog.prompt<string>({
-      content: ({ resolve, dismiss, dialogId }: PromptContext<string>) => (
-        <ModelPickerDialogContent
-          initialModel={currentModel}
-          resolve={resolve}
-          dismiss={dismiss}
-          dialogId={dialogId}
-        />
-      ),
-      size: "large",
-      closeOnEscape: true,
-    })
-
-    if (selectedModel) {
-      const result = await applyModelChange(selectedModel)
-      if (!result.ok) {
-        toast.error(`Failed to set model: ${result.error}`)
-      }
-    }
-  }, [applyModelChange, currentModel, dialog, service, vimEnabled])
-
-  const openTodoOverlay = useCallback(() => {
-    dialog.closeAll()
-    void dialog.alert({
-      content: ({ dismiss, dialogId }: AlertContext) => (
-        <TodoOverlayContent
-          items={todoTracker?.items ?? []}
-          dismiss={dismiss}
-          dialogId={dialogId}
-        />
-      ),
-      size: "large",
-    })
-  }, [dialog, todoTracker])
-
-  const runLocalSlashCommand = useCallback(
-    async (command: ParsedLocalSlashCommand) => {
-      switch (command.name) {
-        case "q": {
-          await appController.quit()
-          return
-        }
-
-        case "new": {
-          await service.newSession()
-          return
-        }
-
-        case "sessions": {
-          await openSessionPicker()
-          return
-        }
-
-        case "clear": {
-          service.clearMessages()
-          return
-        }
-
-        case "model": {
-          const nextModel = command.args.join(" ").trim()
-          if (!nextModel) {
-            const choices = availableModels.map((model) => model.value).join(", ")
-            service.appendSystemMessage(
-              choices ? `Available models: ${choices}` : "No models reported by the SDK yet.",
-            )
-            return
-          }
-          const result = await applyModelChange(nextModel)
-          if (!result.ok) {
-            toast.error(`Failed to set model: ${result.error}`)
-          }
-          return
-        }
-
-        case "plan": {
-          const isCurrentlyPlan = service.getState().permissionMode === "plan"
-          const nextMode: string = isCurrentlyPlan ? "default" : "plan"
-          try {
-            await service.setPermissionMode(nextMode)
-            toast.success(`Plan mode: ${nextMode === "plan" ? "on" : "off"}`)
-          } catch (error) {
-            toast.error(`Failed to set permission mode: ${getErrorMessage(error)}`)
-          }
-          return
-        }
-
-        case "perm": {
-          const nextMode = command.args.join(" ").trim()
-          if (!nextMode) {
-            service.appendSystemMessage(
-              `Permission modes: ${PERMISSION_MODES.join(", ")}`,
-            )
-            return
-          }
-
-          if (!isPermissionModeName(nextMode)) {
-            toast.error(
-              `Invalid permission mode: ${nextMode}. Expected one of ${PERMISSION_MODES.join(", ")}`,
-            )
-            return
-          }
-
-          await service.setPermissionMode(nextMode)
-          toast.success(`Permission mode: ${nextMode}`)
-          return
-        }
-
-        case "theme": {
-          const nextTheme = command.args.join(" ").trim()
-          if (!nextTheme) {
-            service.appendSystemMessage(`Themes: ${THEME_NAMES.join(", ")}`)
-            return
-          }
-
-          if (!isThemeName(nextTheme)) {
-            toast.error(
-              `Invalid theme: ${nextTheme}. Expected one of ${THEME_NAMES.join(", ")}`,
-            )
-            return
-          }
-
-          service.setTheme(nextTheme)
-          toast.success(`Theme: ${nextTheme}`)
-          return
-        }
-
-        case "diff": {
-          const nextMode = service.toggleDiffMode()
-          toast.info(`Diff mode: ${nextMode}`)
-          return
-        }
-
-        case "thinking": {
-          const mode = command.args.join(" ").trim().toLowerCase()
-
-          if (!mode || mode === "toggle") {
-            const showThinking = service.toggleThinkingVisibility()
-            toast.info(`Thinking: ${showThinking ? "on" : "off"}`)
-            return
-          }
-
-          if (mode !== "on" && mode !== "off") {
-            toast.error("Invalid thinking mode: expected on, off, or toggle")
-            return
-          }
-
-          const showThinking = mode === "on"
-          service.setShowThinking(showThinking)
-          toast.info(`Thinking: ${showThinking ? "on" : "off"}`)
-          return
-        }
-
-        case "vim": {
-          const result = parseVimCommandMode(command.args)
-          if (!result.ok) {
-            toast.error(result.error)
-            return
-          }
-
-          const nextEnabled =
-            result.mode === "toggle" ? !vimEnabled : result.mode === "on"
-
-          if (nextEnabled === vimEnabled) {
-            toast.info(`Vim: already ${nextEnabled ? "on" : "off"}`)
-            return
-          }
-
-          service.setVimEnabled(nextEnabled)
-          toast.info(`Vim: ${nextEnabled ? "on" : "off"}`)
-          return
-        }
-
-        case "keys": {
-          openKeymapHelp()
-          return
-        }
-
-        case "mcp": {
-          let servers
-          try {
-            servers = await service.getMcpServerStatus()
-          } catch (err) {
-            toast.error(getErrorMessage(err))
-            return
-          }
-
-          dialog.closeAll()
-          void dialog.alert({
-            content: ({ dismiss, dialogId }: AlertContext) => (
-              <McpOverlayContent
-                servers={servers}
-                onReconnect={async (name) => {
-                  await service.reconnectMcpServer(name)
-                }}
-                onToggle={async (name, enabled) => {
-                  await service.toggleMcpServer(name, enabled)
-                }}
-                dismiss={dismiss}
-                dialogId={dialogId}
-              />
-            ),
-            size: "large",
-          })
-          return
-        }
-      }
-    },
-    [
-      appController,
-      applyModelChange,
-      availableModels,
-      dialog,
-      openKeymapHelp,
-      openSessionPicker,
-      service,
-      vimEnabled,
-    ],
-  )
-
-  const submitComposer = useCallback(() => {
-    if (!canSubmitPrompt) {
-      return
-    }
-
-    const submission = resolveComposerSubmission(promptText)
-    if (submission.kind === "empty") {
-      return
-    }
-
-    if (submission.kind === "local_command") {
-      service.setPromptText("")
-      void runLocalSlashCommand(submission.command).catch((error) => {
-        toast.error(getErrorMessage(error))
-      })
-      return
-    }
-
-    void service.submitCurrentPrompt()
-  }, [canSubmitPrompt, promptText, runLocalSlashCommand, service])
-
-  const selectPickerOption = useCallback(
-    (index: number) => {
-      if (!picker) return
-
-      if (picker.kind === "slash") {
-        const option = picker.options[index]
-        if (!option) return
-
-        if (shouldSubmitSlashSuggestion(promptText, option)) {
-          submitComposer()
-          return
-        }
-
-        service.setPromptText(option.value)
-      } else {
-        const option = picker.options[index]
-        if (!option) return
-        service.setPromptText(option.value)
-      }
-
-      if (vimEnabled) {
-        service.setVimMode("insert")
-      }
-    },
-    [picker, promptText, service, submitComposer, vimEnabled],
-  )
-
-  const syncPromptTextFromInput = useCallback(() => {
-    const input = inputRef.current
-    if (!input) return
-    service.setPromptText(input.value)
-  }, [service])
-
-  const handleAction = useCallback(
-    (action: string) => {
-      switch (action) {
-        case "quit":
-          void appController.quit()
-          break
-        case "session.new":
-          void service.newSession()
-          break
-        case "session.openPicker":
-          void openSessionPicker()
-          break
-        case "model.openPicker":
-          void openModelPicker()
-          break
-        case "messages.clear":
-          service.clearMessages()
-          break
-        case "scroll.halfPageDown":
-          messageAreaRef.current?.scrollBy(0.5, "viewport")
-          break
-        case "scroll.halfPageUp":
-          messageAreaRef.current?.scrollBy(-0.5, "viewport")
-          break
-        case "scroll.pageDown":
-          messageAreaRef.current?.scrollBy(1, "viewport")
-          break
-        case "scroll.pageUp":
-          messageAreaRef.current?.scrollBy(-1, "viewport")
-          break
-        case "scroll.top":
-          messageAreaRef.current?.scrollTo(0)
-          break
-        case "scroll.bottom":
-          if (messageAreaRef.current) {
-            messageAreaRef.current.scrollTo(messageAreaRef.current.scrollHeight)
-          }
-          break
-        case "editor.open":
-          void appController.openEditor(promptText).then((value) => {
-            if (value !== null) {
-              service.setPromptText(value)
-              service.setVimMode("insert")
-            }
-          }).catch((error) => {
-            const message = error instanceof Error ? error.message : String(error)
-            toast.error(`Editor failed: ${message}`)
-          })
-          break
-        case "mode.normal":
-          setPendingOperator(null)
-          service.setVimMode("normal")
-          break
-        case "mode.insert":
-          setPendingOperator(null)
-          service.setVimMode("insert")
-          break
-        case "mode.insertAfter":
-          setPendingOperator(null)
-          inputRef.current?.moveCursorRight()
-          service.setVimMode("insert")
-          break
-        case "mode.insertEnd":
-          setPendingOperator(null)
-          inputRef.current?.gotoLineEnd()
-          service.setVimMode("insert")
-          break
-        case "mode.insertStart":
-          setPendingOperator(null)
-          inputRef.current?.gotoLineHome()
-          service.setVimMode("insert")
-          break
-        case "prompt.submit":
-          submitComposer()
-          break
-        case "keys.help":
-          openKeymapHelp()
-          break
-        case "todos.toggle":
-          openTodoOverlay()
-          break
-        case "permission.allow":
-          service.resolvePermission(true)
-          break
-        case "permission.deny":
-          service.resolvePermission(false)
-          break
-        default:
-          break
-      }
-    },
-    [
-      appController,
-      openKeymapHelp,
-      openModelPicker,
-      openSessionPicker,
-      openTodoOverlay,
-      promptText,
-      service,
-      submitComposer,
-    ],
-  )
-
-  useKeyboard((key) => {
-    // When a dialog is open, let the dialog handle its own keyboard via useDialogKeyboard.
-    // Only exception: permission awaiting state uses keymap for allow/deny.
-    if (isDialogOpen && sessionState.status !== "awaiting_permission") {
-      return
-    }
-
-    if (sessionState.status === "running" && !isEscapeKey(key)) {
-      clearPendingEscapeInterrupt()
-    }
-
-    const keyStr = normalizeKeyBinding(getKeyBindingString(key))
-    if (
-      key.repeated &&
-      (keyStr === "?" || keyStr === "ctrl+/") &&
-      matchesInteractionMode(interactionMode, ["normal", "plain"] as const)
-    ) {
-      return
-    }
-
-    const context =
-      sessionState.status === "awaiting_permission" ? "modal" as const : "global" as const
-
-    const action = keymap.resolve(keyStr, context, interactionMode)
-
-    if (sessionState.status !== "awaiting_permission") {
-      const keyConsumedByAction = action !== null && shouldSyncPromptTextFromKey(key)
-      if (!isNormalInteractionMode && shouldSyncPromptTextFromKey(key) && !keyConsumedByAction) {
-        queueMicrotask(syncPromptTextFromInput)
-      }
-
-      if (keyConsumedByAction && !isNormalInteractionMode) {
-        queueMicrotask(() => {
-          if (inputRef.current) {
-            inputRef.current.value = promptText
-          }
-        })
-      }
-
-      if (picker) {
-        const pickerAction = resolvePickerKeyboardAction(key, interactionMode)
-        switch (pickerAction.kind) {
-          case "move":
-            clearPendingEscapeInterrupt()
-            setSelectedIndex((current) => {
-              const next = current + pickerAction.delta
-              return Math.max(0, Math.min(next, picker.options.length - 1))
-            })
-            return
-          case "select":
-            clearPendingEscapeInterrupt()
-
-            if (!isNormalInteractionMode) {
-              return
-            }
-
-            if (!picker.options[selectedIndex]) {
-              return
-            }
-
-            selectPickerOption(selectedIndex)
-            return
-          case "close":
-            if (isNormalInteractionMode && vimEnabled) {
-              clearPendingEscapeInterrupt()
-              service.setVimMode("insert")
-              return
-            }
-            break
-          case "setMode":
-            clearPendingEscapeInterrupt()
-            service.setVimMode(pickerAction.mode)
-            return
-          case "none":
-            break
-        }
-      }
-
-      if (isNormalInteractionMode && !picker) {
-        if (key.name === "escape") {
-          if (pendingOperator !== null) {
-            clearPendingEscapeInterrupt()
-            setPendingOperator(null)
-            return
-          }
-        }
-
-        if (isPromptTriggerKey(key, "/")) {
-          clearPendingEscapeInterrupt()
-          setPendingOperator(null)
-          service.setPromptText("/")
-          service.setVimMode("insert")
-          return
-        }
-
-        const vimResult = handleNormalModeKey(inputRef.current, key, pendingOperator)
-        if (vimResult.handled) {
-          clearPendingEscapeInterrupt()
-          setPendingOperator(vimResult.nextOperator)
-          syncPromptTextFromInput()
-          if (vimResult.enterInsertMode) {
-            service.setVimMode("insert")
-          }
-          return
-        }
-      }
-    }
-
-    if (action) {
-      clearPendingEscapeInterrupt()
-      handleAction(action)
-      return
-    }
-
-    // Only unconsumed escape keys contribute to the interrupt window.
-    if (sessionState.status === "running") {
-      if (isDoubleEscapeKey(key)) {
-        clearPendingEscapeInterrupt()
-        interruptRunningRequest()
-        return
-      }
-
-      if (isEscapeKey(key) && !key.repeated) {
-        const now = Date.now()
-        const previousEscapeAt = pendingEscapeInterruptRef.current
-
-        if (
-          previousEscapeAt !== null &&
-          now - previousEscapeAt <= ESCAPE_INTERRUPT_WINDOW_MS
-        ) {
-          clearPendingEscapeInterrupt()
-          interruptRunningRequest()
-          return
-        }
-
-        pendingEscapeInterruptRef.current = now
-        return
-      }
-    }
+  const dialogs = useAppDialogs()
+  const actions = useAppActions({
+    appController,
+    dialogs,
+    availableModelValues,
+    canSubmitPrompt,
+    inputRef,
+    messageAreaRef,
+    pendingEscapeInterruptRef,
+    picker,
+    promptText,
+    service,
+    setPendingOperator,
+    vimEnabled,
+  })
+
+  useAppKeyboard({
+    clearPendingEscapeInterrupt: actions.clearPendingEscapeInterrupt,
+    handleAction: actions.handleAction,
+    inputRef,
+    interruptRunningRequest: actions.interruptRunningRequest,
+    interactionMode,
+    isDialogOpen,
+    isNormalInteractionMode,
+    keymap,
+    pendingEscapeInterruptRef,
+    pendingOperator,
+    picker,
+    promptText,
+    selectedIndex,
+    selectPickerOption: actions.selectPickerOption,
+    service,
+    sessionState,
+    setPendingOperator,
+    setSelectedIndex,
+    syncPromptTextFromInput: actions.syncPromptTextFromInput,
+    vimEnabled,
   })
 
   return (
@@ -830,14 +166,14 @@ function AppContent() {
           inputRef={inputRef}
           onSubmit={() => {
             if (picker) {
-              selectPickerOption(selectedIndex)
+              actions.selectPickerOption(selectedIndex)
               return
             }
 
-            submitComposer()
+            actions.submitComposer()
           }}
         />
-        <StatusBar onTodosClick={openTodoOverlay} />
+        <StatusBar onTodosClick={dialogs.openTodoOverlay} />
         {picker && !isDialogOpen ? (
           <CompletionOverlay
             title={picker.title}
@@ -845,10 +181,10 @@ function AppContent() {
             selectedIndex={selectedIndex}
             loading={picker.kind === "file" ? picker.loading : false}
             focused={isNormalInteractionMode}
-            onFocusList={focusCompletionList}
+            onFocusList={actions.focusCompletionList}
             onSelect={(index: number) => {
               setSelectedIndex(index)
-              selectPickerOption(index)
+              actions.selectPickerOption(index)
             }}
           />
         ) : null}
@@ -856,119 +192,4 @@ function AppContent() {
       <Toaster {...toasterOptions} />
     </>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Permission dialog hook
-// ---------------------------------------------------------------------------
-
-function usePermissionDialog() {
-  const dialog = useDialog()
-  const service = useConversationService()
-  const sessionState = useConversationSelector((s) => s.sessionState)
-  const permissionRequestRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    if (sessionState.status !== "awaiting_permission") {
-      permissionRequestRef.current = null
-      return
-    }
-
-    const { toolName, toolInput } = sessionState.request
-    const requestKey = `${toolName}:${JSON.stringify(toolInput)}`
-
-    // Prevent double-opening for the same request
-    if (permissionRequestRef.current === requestKey) return
-    permissionRequestRef.current = requestKey
-
-    void dialog.confirm({
-      content: ({ resolve, dismiss, dialogId }: ConfirmContext) => (
-        <PermissionDialogContent
-          toolName={toolName}
-          toolInput={toolInput}
-          resolve={resolve}
-          dismiss={dismiss}
-          dialogId={dialogId}
-        />
-      ),
-      size: "medium",
-      fallback: false,
-      closeOnEscape: true,
-    }).then((allowed) => {
-      service.resolvePermission(allowed)
-    })
-  }, [dialog, service, sessionState])
-}
-
-// ---------------------------------------------------------------------------
-// Utility functions
-// ---------------------------------------------------------------------------
-
-function getKeyBindingString(key: KeyEvent): string {
-  if (!key.ctrl && !key.meta && isPrintableKeySequence(key.sequence)) {
-    return key.sequence
-  }
-
-  const parts: string[] = []
-  if (key.ctrl) parts.push("ctrl")
-  if (key.meta) parts.push("alt")
-  if (key.shift && key.name.length > 1) parts.push("shift")
-  parts.push(key.name)
-  return parts.join("+")
-}
-
-function isPrintableKeySequence(sequence: string): boolean {
-  return sequence.length === 1 && sequence >= " " && sequence <= "~"
-}
-
-function isPromptTriggerKey(
-  key: KeyEvent,
-  expected: "/",
-): boolean {
-  return key.name === expected || key.sequence === expected
-}
-
-function shouldSyncPromptTextFromKey(
-  key: Pick<KeyEvent, "name" | "sequence" | "ctrl" | "meta">,
-): boolean {
-  if (key.ctrl || key.meta) {
-    return false
-  }
-
-  return isPrintableKeySequence(key.sequence) || key.name === "backspace" || key.name === "delete"
-}
-
-function isEscapeKey(key: Pick<KeyEvent, "name">): boolean {
-  return key.name === "escape"
-}
-
-function isDoubleEscapeKey(key: Pick<KeyEvent, "name" | "meta">): boolean {
-  return isEscapeKey(key) && key.meta
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function getActiveFileToken(
-  promptText: string,
-): { readonly query: string; readonly startIndex: number } | null {
-  const match = /(^|\s)@([^\s]*)$/.exec(promptText)
-  if (!match) return null
-
-  const prefix = match[1] ?? ""
-  const query = match[2] ?? ""
-  return {
-    query,
-    startIndex: promptText.length - query.length - 1,
-  }
-}
-
-function replaceActiveFileToken(
-  promptText: string,
-  startIndex: number,
-  filePath: string,
-): string {
-  const before = promptText.slice(0, startIndex)
-  return `${before}@${filePath} `
 }

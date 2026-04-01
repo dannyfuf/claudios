@@ -39,6 +39,14 @@ describe("Keymap", () => {
     expect(keymap.resolve("ctrl+t", "global", "normal")).toBe("todos.toggle")
   })
 
+  it("resolves tab to plan toggle in all interaction modes", () => {
+    const keymap = new Keymap()
+
+    expect(keymap.resolve("tab", "global", "plain")).toBe("plan.toggle")
+    expect(keymap.resolve("tab", "global", "insert")).toBe("plan.toggle")
+    expect(keymap.resolve("tab", "global", "normal")).toBe("plan.toggle")
+  })
+
   it("applies action-based key overrides to picker shortcuts", () => {
     const keymap = new Keymap({
       "model.openPicker": "alt+m",

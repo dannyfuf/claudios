@@ -15,6 +15,7 @@ describe("theme resolution", () => {
       const palette = getThemePalette(themeName)
       expect(palette).toBe(THEMES[themeName])
       expect(palette.shell.length).toBeGreaterThan(0)
+      expect(palette.assistantSurface.length).toBeGreaterThan(0)
       expect(palette.surfaceElevated.length).toBeGreaterThan(0)
       expect(palette.selectionText.length).toBeGreaterThan(0)
     }
@@ -28,6 +29,14 @@ describe("theme resolution", () => {
     expect(isThemeName("dark")).toBe(true)
     expect(isThemeName("tokyo-night")).toBe(true)
     expect(isThemeName("unknown")).toBe(false)
+  })
+
+  it("defines a distinct assistant response surface in the default theme", () => {
+    const palette = THEMES["dark"]
+
+    expect(palette.assistantSurface).not.toBe(palette.userSurface)
+    expect(palette.assistantSurface).not.toBe(palette.toolSurface)
+    expect(palette.assistantSurface).not.toBe(palette.surface)
   })
 })
 

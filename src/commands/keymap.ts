@@ -37,6 +37,7 @@ const defaultBindings: readonly KeymapEntry[] = [
   { key: "ctrl+p", context: "global", action: "model.openPicker", description: "Open the model picker" },
   { key: "ctrl+e", context: "global", action: "editor.open", description: "Open $EDITOR for prompt" },
   { key: "ctrl+l", context: "global", action: "messages.clear", description: "Clear message area" },
+  { key: "tab", context: "global", action: "plan.toggle", description: "Toggle plan mode" },
 
   { key: "ctrl+t", context: "global", action: "todos.toggle", description: "Toggle task list" },
 

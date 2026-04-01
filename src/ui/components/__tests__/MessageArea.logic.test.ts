@@ -18,20 +18,21 @@ import {
   getToolBriefDetail,
   getToolStatusPresentation,
   getTodoProgress,
+  mergeVisibleMessages,
   mergeConsecutiveThinkingMessages,
   normalizeToolLabel,
 } from "#ui/components/MessageArea.logic"
 
 describe("message presentation helpers", () => {
-  it("maps semantic message kinds into the shared primary, secondary, and tertiary tiers", () => {
+  it("maps semantic message kinds into the user, assistant, and activity tiers", () => {
     const cases = [
-      [createUserMessage("u-1"), "primary"],
-      [createToolCallMessage("tool-1", "Read"), "primary"],
-      [createTaskMessage("task-1"), "primary"],
-      [createErrorMessage("e-1"), "primary"],
-      [createAssistantMessage("a-1"), "secondary"],
-      [createSystemMessage("s-1"), "secondary"],
-      [createThinkingMessage("t-1"), "tertiary"],
+      [createUserMessage("u-1"), "user"],
+      [createAssistantMessage("a-1"), "assistant"],
+      [createToolCallMessage("tool-1", "Read"), "activity"],
+      [createTaskMessage("task-1"), "activity"],
+      [createErrorMessage("e-1"), "activity"],
+      [createSystemMessage("s-1"), "activity"],
+      [createThinkingMessage("t-1"), "activity"],
     ] as const satisfies readonly (readonly [DisplayMessage, ReturnType<typeof getMessageTier>])[]
 
     for (const [message, expectedTier] of cases) {
@@ -73,7 +74,7 @@ describe("message presentation helpers", () => {
     })
 
     expect(getMessagePresentation(createTaskMessage("task-1"), null)).toMatchObject({
-      tier: "primary",
+      tier: "activity",
       frame: {
         alignment: "left",
         width: "column",
@@ -87,6 +88,16 @@ describe("message presentation helpers", () => {
         labelTone: "warning",
         indicator: { kind: "spinner", tone: "warning" },
       },
+    })
+  })
+
+  it("gives assistant replies their own framed surface", () => {
+    expect(getMessageFrameIntent(createAssistantMessage("a-1"))).toEqual({
+      alignment: "left",
+      width: "column",
+      surface: "assistantSurface",
+      border: "subtle",
+      borderTone: null,
     })
   })
 })
@@ -157,6 +168,41 @@ describe("mergeConsecutiveThinkingMessages", () => {
         isStreaming: t2.isStreaming,
       },
     ])
+  })
+
+  it("deduplicates identical adjacent thinking rows from the same scope", () => {
+    const t1 = {
+      ...createThinkingMessage("t-1", "Now let me look at how slash commands are populated."),
+      parentToolUseId: null,
+      taskId: null,
+    } satisfies ThinkingDisplayMessage
+    const t2 = {
+      ...createThinkingMessage("t-2", "Now let me look at how slash commands are populated."),
+      parentToolUseId: null,
+      taskId: null,
+    } satisfies ThinkingDisplayMessage
+
+    expect(mergeConsecutiveThinkingMessages([t1, t2])).toEqual([t1])
+  })
+})
+
+describe("mergeVisibleMessages", () => {
+  it("groups consecutive top-level tool rows into one visible row", () => {
+    const merged = mergeVisibleMessages([
+      createToolCallMessage("tool-1", "Read"),
+      createToolCallMessage("tool-2", "Grep"),
+      createAssistantMessage("a-1"),
+    ])
+
+    expect(merged).toHaveLength(2)
+    expect(merged[0]).toMatchObject({
+      kind: "tool_call_group",
+      messages: [
+        { toolCall: { id: "tool-1", name: "Read" } },
+        { toolCall: { id: "tool-2", name: "Grep" } },
+      ],
+    })
+    expect(merged[1]).toEqual(createAssistantMessage("a-1"))
   })
 })
 

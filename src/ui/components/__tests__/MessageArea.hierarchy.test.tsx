@@ -60,6 +60,23 @@ describe("MessageArea hierarchy", () => {
     expect(frame).not.toContain("-- response --")
   })
 
+  it("keeps assistant markdown rendering inside the framed response block", async () => {
+    renderedView = await renderMessageArea(
+      createConversationState({
+        messages: [
+          createAssistantMessage(["# Plan", "", "- inspect renderer", "", "```ts", "const answer = 42", "```"].join("\n")),
+        ],
+      }),
+    )
+
+    const frame = await renderFrame(renderedView.testSetup)
+    const assistantHeaderLine = getLineContaining(frame, "claude")
+
+    expect(assistantHeaderLine).toContain("│")
+    expect(frame).toContain("const answer = 42")
+    expect(frame).not.toContain("```")
+  })
+
   it("keeps tertiary thinking metadata inside the frame while streaming", async () => {
     renderedView = await renderMessageArea(
       createConversationState({

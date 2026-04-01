@@ -4,6 +4,7 @@ export type ThemePalette = {
   readonly surface: string
   readonly surfaceAlt: string
   readonly surfaceElevated: string
+  readonly assistantSurface: string
   readonly userSurface: string
   readonly toolSurface: string
   readonly text: string
@@ -34,6 +35,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     surface: "#18181b",
     surfaceAlt: "#1c1c20",
     surfaceElevated: "#27272a",
+    assistantSurface: "#141418",
     userSurface: "#18181b",
     toolSurface: "#18181b",
     text: "#fafafa",
@@ -56,6 +58,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     surface: "#1a1b26",
     surfaceAlt: "#16161e",
     surfaceElevated: "#202335",
+    assistantSurface: "#21263a",
     userSurface: "#1d2233",
     toolSurface: "#171b29",
     text: "#c0caf5",
@@ -78,6 +81,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     surface: "#3b4252",
     surfaceAlt: "#434c5e",
     surfaceElevated: "#4a5568",
+    assistantSurface: "#40495b",
     userSurface: "#465064",
     toolSurface: "#3f4758",
     text: "#eceff4",
@@ -100,6 +104,7 @@ export const THEMES: Record<ThemeName, ThemePalette> = {
     surface: "#18221c",
     surfaceAlt: "#111913",
     surfaceElevated: "#223127",
+    assistantSurface: "#1d2b22",
     userSurface: "#213128",
     toolSurface: "#172219",
     text: "#d7e4d1",

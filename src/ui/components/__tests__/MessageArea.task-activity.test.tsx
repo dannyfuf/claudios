@@ -103,6 +103,34 @@ describe("MessageArea task activity", () => {
     expect(getLineContaining(frame, "tool")).toContain("│")
   })
 
+  it("renders consecutive standalone tool rows inside a single tool frame", async () => {
+    renderedView = await renderMessageArea(
+      createConversationState({
+        messages: [
+          createToolCallMessage({
+            id: "tool-1",
+            name: "Read",
+            input: { file_path: "/src/index.ts" },
+            status: "completed",
+          }),
+          createToolCallMessage({
+            id: "tool-2",
+            name: "Grep",
+            input: { pattern: "slash" },
+            status: "completed",
+          }),
+        ],
+      }),
+    )
+
+    const frame = await renderFrame(renderedView.testSetup)
+    const toolHeaders = frame.split("\n").filter((line) => line.includes("tool") && line.includes("│"))
+
+    expect(frame).toContain("Read")
+    expect(frame).toContain("Grep")
+    expect(toolHeaders).toHaveLength(1)
+  })
+
   it("hides the spawn tool row when a matching task row exists", async () => {
     renderedView = await renderMessageArea(
       createConversationState({

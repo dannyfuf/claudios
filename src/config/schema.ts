@@ -9,6 +9,7 @@ import { z } from "zod"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { PERMISSION_MODES } from "#shared/permission-modes"
 import { DEFAULT_THEME_NAME, THEME_NAMES } from "#ui/theme"
 
 // ---------------------------------------------------------------------------
@@ -19,9 +20,7 @@ export const ConfigSchema = z.object({
   theme: z.enum(THEME_NAMES).default(DEFAULT_THEME_NAME),
   editor: z.string().default("$EDITOR"),
   defaultModel: z.string().default("sonnet"),
-  defaultPermissionMode: z
-    .enum(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"])
-    .default("bypassPermissions"),
+  defaultPermissionMode: z.enum(PERMISSION_MODES).default("bypassPermissions"),
   keybindings: z.record(z.string(), z.string()).default({}),
   diffMode: z.enum(["unified", "split"]).default("unified"),
   showThinking: z.boolean().default(true),

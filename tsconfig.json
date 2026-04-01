@@ -20,7 +20,9 @@
 
     "baseUrl": ".",
     "paths": {
+      "#cli/*": ["./src/cli/*"],
       "#sdk/*": ["./src/sdk/*"],
+      "#shared/*": ["./src/shared/*"],
       "#state/*": ["./src/state/*"],
       "#ui/*": ["./src/ui/*"],
       "#commands/*": ["./src/commands/*"],

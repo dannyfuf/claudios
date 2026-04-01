@@ -215,6 +215,7 @@ Type `/` in the prompt to trigger a command. A completion overlay will appear as
 | `/diff` | Toggle between unified and split diff view |
 | `/thinking [on\|off\|toggle]` | Show or hide thinking rows |
 | `/perm <mode>` | Change permission mode (e.g. `/perm acceptEdits`) |
+| `/plan` | Enter plan mode or request exit approval |
 | `/vim [on\|off\|toggle]` | Enable, disable, or toggle vim mode |
 | `/keys` | Show the keybindings help overlay |
 | `/clear` | Clear the message area |
@@ -226,6 +227,8 @@ Type `/` in the prompt to trigger a command. A completion overlay will appear as
 
 claudios starts in **plain** mode, so you can type immediately without entering vim first. Run `/vim` to enable vim mode at runtime. When vim mode is enabled, `Escape` enters normal mode and `i` returns to insert mode.
 
+Plan mode is separate from vim normal mode. When plan mode is active, the prompt outline and status badge stay visible, Claude is limited to read-only tooling, and exiting plan mode requires explicit approval before writes are restored.
+
 ### Global (any mode)
 
 | Key | Action |
@@ -236,6 +239,7 @@ claudios starts in **plain** mode, so you can type immediately without entering 
 | `Ctrl+P` | Open model picker |
 | `Ctrl+E` | Open `$EDITOR` to compose prompt |
 | `Ctrl+L` | Clear message area |
+| `Tab` | Enter plan mode or request exit approval |
 | `Ctrl+T` | Toggle task list overlay |
 | `Ctrl+D` | Scroll half page down |
 | `Ctrl+U` | Scroll half page up |
@@ -272,6 +276,7 @@ claudios starts in **plain** mode, so you can type immediately without entering 
 - Model and session pickers keep the filter active in plain mode and vim insert mode.
 - In vim normal mode, picker results become active. `Esc` from the filter moves to results, `i` returns to the filter, and `Esc` from results closes the picker.
 - Inline slash and file completion keep the composer active in plain/insert mode and move focus to the completion list in normal mode.
+- `Tab` does not toggle plan mode while a picker is open.
 
 ### Permission modal
 
@@ -361,6 +366,9 @@ bun install
 # Run from source with hot reload
 bun run dev
 
+# Lint
+bun run lint
+
 # Type-check (no emit)
 bun run typecheck
 
@@ -376,19 +384,30 @@ bun run build
 ```
 claudios/
 ├── src/
-│   ├── index.tsx                 # CLI entrypoint — arg parsing, startup, renderer mount
+│   ├── index.tsx                 # Composition root — config load, startup, renderer mount
+│   ├── cli/
+│   │   ├── args.ts               # CLI parsing plus help/version output helpers
+│   │   ├── commands.ts           # Non-chat command handlers (upgrade, uninstall, sessions, config)
+│   │   └── editor.ts             # External editor resolution and launch helpers
 │   ├── commands/
 │   │   ├── keymap.ts             # Keybinding registry and resolution
 │   │   └── slash.ts              # Slash command parsing and dispatch
 │   ├── config/
 │   │   └── schema.ts             # Zod config schema, loader, defaults
+│   ├── shared/
+│   │   ├── errors.ts             # Shared unknown-error normalization helper
+│   │   └── permission-modes.ts   # Shared permission mode tuple, type, and guard
 │   ├── sdk/
 │   │   ├── client.ts             # Claude Agent SDK adapter
 │   │   └── types.ts              # Domain types wrapping SDK types
 │   ├── state/
-│   │   └── conversation-service.ts  # Core state machine (Effect-TS)
+│   │   ├── conversation-service.ts   # Stateful query orchestration and reducer dispatch
+│   │   ├── conversation-history.ts   # Pure session-history projection helpers
+│   │   ├── conversation-transcript.ts # Pure transcript parsing and UUID helpers
+│   │   └── conversation-tasks.ts     # Pure task merge and final-state helpers
 │   └── ui/
-│       ├── App.tsx               # Root component (4-zone layout)
+│       ├── App.tsx               # Root component composition for the 4-zone layout
+│       ├── app/                  # Local command, picker, keyboard, and dialog orchestration helpers
 │       ├── components/           # Header, MessageArea, PromptInput, StatusBar, overlays
 │       ├── hooks.tsx             # React contexts and custom hooks
 │       ├── theme.ts              # Theme palettes and bridge helpers
@@ -401,11 +420,13 @@ claudios/
 
 ### Architecture overview
 
+- **CLI:** `src/index.tsx` stays thin and delegates CLI parsing, non-chat commands, and editor helpers to `src/cli/`.
 - **State:** `ConversationService` (Effect-TS) owns all conversation state. React subscribes via a callback registry — no shared mutable state leaks into the UI layer.
+- **Pure state helpers:** `src/state/conversation-history.ts`, `src/state/conversation-transcript.ts`, and `src/state/conversation-tasks.ts` hold pure projection and merge logic outside the service class.
 - **SDK:** `#sdk/client.ts` adapts the `@anthropic-ai/claude-agent-sdk` — wraps session management, auth checks, and streaming query creation.
-- **UI:** OpenTUI (`@opentui/react`) renders the terminal layout. Components are standard React; OpenTUI handles the TTY rendering backend.
+- **UI:** OpenTUI (`@opentui/react`) renders the terminal layout. `App.tsx` now composes focused helpers in `src/ui/app/`, while `src/ui/components/` stays view-oriented.
 - **Vim-aware surfaces:** This delivery stops at the Phase 1 helper layer (`src/ui/vim-mode.ts`, `src/ui/picker-surface.ts`, `src/ui/components/VimFocusFrame.tsx`). Global vim state stays in `ConversationService`, while per-surface focus stays local to the UI layer.
-- **Config:** Loaded once at startup via Zod schema. CLI flags override config values before they reach the service layer.
+- **Config:** Loaded once at startup via Zod schema. Shared permission modes and CLI flags override config values before they reach the service layer.
 
 ---
 
@@ -425,10 +446,11 @@ Contributions are welcome! Here's how to get started:
    - Tests required for new features or bug fixes
 
 3. **Validate before submitting:**
-   ```sh
-   bun run typecheck   # must pass with zero errors
-   bun test            # all tests must be green
-   bun run build       # build must succeed
+    ```sh
+    bun run lint        # catch cleanup regressions early
+    bun run typecheck   # must pass with zero errors
+    bun test            # all tests must be green
+    bun run build       # build must succeed
    ```
 
 4. **Open a pull request** against `main`. Describe what you changed and why.

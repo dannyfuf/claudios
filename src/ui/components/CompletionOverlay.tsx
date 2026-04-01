@@ -1,3 +1,4 @@
+import { useMemo } from "react"
 import { LoadingIndicator } from "#ui/components/LoadingIndicator"
 import { VimFocusFrame } from "#ui/components/VimFocusFrame"
 import { useThemePalette } from "#ui/hooks"
@@ -20,8 +21,18 @@ type CompletionOverlayProps = {
 
 export function CompletionOverlay(props: CompletionOverlayProps) {
   const theme = useThemePalette()
+  const inlineOptions = useMemo(
+    () =>
+      props.options.map((opt) => ({
+        name: opt.description ? `${opt.name} : ${opt.description}` : opt.name,
+        description: "",
+        value: opt.value,
+      })),
+    [props.options],
+  )
+
   if (!props.loading && props.options.length === 0) return null
-  const visibleHeight = Math.min(16, props.options.length * 2)
+  const visibleHeight = Math.min(12, inlineOptions.length)
 
   return (
     <box
@@ -34,7 +45,7 @@ export function CompletionOverlay(props: CompletionOverlayProps) {
       borderColor={theme.borderStrong}
       backgroundColor={theme.surfaceElevated}
     >
-      <box paddingX={1} paddingTop={1} flexDirection="row" justifyContent="space-between">
+      <box paddingX={1} flexDirection="row" justifyContent="space-between">
         <text>
           <span fg={theme.text}>
             <strong>{props.title.toLowerCase()}</strong>
@@ -47,7 +58,7 @@ export function CompletionOverlay(props: CompletionOverlayProps) {
         ) : null}
       </box>
       {props.loading ? (
-        <box padding={1} minHeight={4} justifyContent="center" alignItems="center">
+        <box paddingX={1} minHeight={2} justifyContent="center" alignItems="center">
           <LoadingIndicator
             color={theme.warning}
             label={`Loading ${props.title.toLowerCase()}...`}
@@ -55,12 +66,14 @@ export function CompletionOverlay(props: CompletionOverlayProps) {
           />
         </box>
       ) : (
-        <box padding={1}>
+        <box paddingX={1}>
           <VimFocusFrame active={props.focused} onMouseDown={props.onFocusList}>
             <select
-              options={[...props.options]}
+              options={inlineOptions}
               selectedIndex={props.selectedIndex}
               height={visibleHeight}
+              itemSpacing={0}
+              showDescription={false}
               focused={props.focused}
               showScrollIndicator
               selectedBackgroundColor={theme.selection}

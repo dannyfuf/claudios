@@ -1,3 +1,4 @@
+import { useState } from "react"
 import type { SyntaxStyle } from "@opentui/core"
 import type {
   AssistantDisplayMessage,
@@ -5,6 +6,7 @@ import type {
   SystemDisplayMessage,
   ThinkingDisplayMessage,
   UserDisplayMessage,
+  UserSlashCommandMeta,
 } from "#state/types"
 import {
   getFrameBackgroundColor,
@@ -29,6 +31,11 @@ export function UserMessage({
   theme,
   layout,
 }: SharedMessageProps & { readonly message: UserDisplayMessage }) {
+  const slashCommand: UserSlashCommandMeta | undefined = message.slashCommand
+  const hasSlashCommand = slashCommand != null
+  const hasDescription = hasSlashCommand && slashCommand.description !== ""
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false)
+
   return (
     <MessageFrame
       align={presentation.frame.alignment}
@@ -46,9 +53,41 @@ export function UserMessage({
         model={presentation.header}
         theme={theme}
       />
-      <text>
-        <span fg={theme.text}>{message.text}</span>
-      </text>
+      {/* Slash command badge */}
+      {hasSlashCommand && (
+        <text>
+          <span fg={theme.primary}>{"/ "}</span>
+          <b fg={theme.text}>{slashCommand.commandName}</b>
+        </text>
+      )}
+      {/* Clickable toggle — shows/hides the command description */}
+      {hasDescription && (
+        <box onMouseDown={() => setDescriptionExpanded((v) => !v)}>
+          <text>
+            <span fg={theme.mutedText}>
+              {descriptionExpanded ? "▾ hide description" : "▸ show description"}
+            </span>
+          </text>
+        </box>
+      )}
+      {/* Command description — shown only when expanded */}
+      {hasDescription && descriptionExpanded && (
+        <text>
+          <span fg={theme.mutedText}>{slashCommand.description}</span>
+        </text>
+      )}
+      {/* User's prompt text — always visible */}
+      {hasSlashCommand
+        ? slashCommand.args !== "" && (
+            <text>
+              <span fg={theme.text}>{slashCommand.args}</span>
+            </text>
+          )
+        : (
+            <text>
+              <span fg={theme.text}>{message.text}</span>
+            </text>
+          )}
     </MessageFrame>
   )
 }

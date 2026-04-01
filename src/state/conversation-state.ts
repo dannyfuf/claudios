@@ -30,11 +30,18 @@ type MessageScope = {
   readonly parentToolUseId: string | null
 }
 
+export type UserSlashCommandMeta = {
+  readonly commandName: string
+  readonly args: string
+  readonly description: string
+}
+
 export type UserDisplayMessage = {
   readonly kind: "user"
   readonly uuid: MessageUUID
   readonly text: string
   readonly timestamp: Date
+  readonly slashCommand?: UserSlashCommandMeta
 }
 
 export type AssistantDisplayMessage = MessageScope & {

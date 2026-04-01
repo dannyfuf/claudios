@@ -1,4 +1,5 @@
 import type { SlashCommand as SDKSlashCommand } from "#sdk/types"
+import type { UserSlashCommandMeta } from "#state/types"
 
 type LocalSlashCommandEntry = {
   readonly name: string
@@ -214,6 +215,37 @@ export function listSlashCommandSuggestions(
   return [...localSuggestions, ...sdkSuggestions].sort((left, right) =>
     left.name.localeCompare(right.name),
   )
+}
+
+/**
+ * Parses the command name and args from an SDK slash command prompt.
+ * Returns null for local commands (they are handled before submitPrompt is called)
+ * and for plain text (no leading slash).
+ *
+ * When `sdkCommands` is provided, the matching command's description is included
+ * in the result. Otherwise the description defaults to an empty string.
+ */
+export function parseSdkSlashCommand(
+  text: string,
+  sdkCommands?: readonly SDKSlashCommand[],
+): UserSlashCommandMeta | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith("/")) return null
+
+  const withoutSlash = trimmed.slice(1).trim()
+  if (!withoutSlash) return null
+
+  const spaceIndex = withoutSlash.indexOf(" ")
+  const commandName = spaceIndex === -1 ? withoutSlash : withoutSlash.slice(0, spaceIndex)
+  const args = spaceIndex === -1 ? "" : withoutSlash.slice(spaceIndex + 1).trim()
+
+  // Exclude local commands — they never reach submitPrompt
+  if (normalizeLocalSlashCommandName(commandName) !== null) return null
+
+  const matchedCommand = sdkCommands?.find((c) => c.name === commandName)
+  const description = matchedCommand?.description ?? ""
+
+  return { commandName, args, description }
 }
 
 export function parseLocalSlashCommand(input: string): ParsedLocalSlashCommand | null {

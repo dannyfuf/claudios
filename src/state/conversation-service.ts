@@ -72,6 +72,7 @@ import {
   type PermissionModeName,
   type StandardPermissionMode,
 } from "#shared/permission-modes"
+import { parseSdkSlashCommand } from "#commands/slash"
 
 type ConversationServiceDependencies = {
   readonly createQuery: typeof createQuery
@@ -292,11 +293,13 @@ export class ConversationService {
    * Submit a user prompt. If no active query exists, starts a new one.
    */
   async submitPrompt(text: string): Promise<void> {
+    const slashCommandMeta = parseSdkSlashCommand(text, this.state.availableCommands)
     const userMessage: DisplayMessage = {
       kind: "user",
       uuid: MessageUUID(crypto.randomUUID()),
       text,
       timestamp: new Date(),
+      ...(slashCommandMeta !== null ? { slashCommand: slashCommandMeta } : {}),
     }
     this.dispatch({ type: "append_message", message: userMessage })
     this.dispatch({ type: "set_session_state", state: { status: "running" } })

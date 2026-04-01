@@ -24,6 +24,7 @@ export type {
   ThinkingDisplayMessage,
   ToolCallDisplayMessage,
   UserDisplayMessage,
+  UserSlashCommandMeta,
   VimMode,
 } from "./conversation-state"
 

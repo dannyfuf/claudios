@@ -59,6 +59,14 @@ function buildOptions(
   if (overrides) {
     Object.assign(base, overrides)
   }
+
+  if (
+    base["permissionMode"] === "bypassPermissions"
+    || base["allowDangerouslySkipPermissions"] === true
+  ) {
+    base["allowDangerouslySkipPermissions"] = true
+  }
+
   // The SDK Options type is large with many optional fields.
   // We construct a valid subset and cast.
   return base as unknown as Options

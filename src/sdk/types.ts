@@ -28,6 +28,7 @@ import type {
   ModelInfo,
   AccountInfo,
   PermissionMode,
+  PermissionResult,
   McpServerStatus,
 } from "@anthropic-ai/claude-agent-sdk"
 
@@ -58,6 +59,7 @@ export type {
   ModelInfo,
   AccountInfo,
   PermissionMode,
+  PermissionResult,
   McpServerStatus,
 }
 
@@ -130,11 +132,22 @@ export type SpawnedTask = {
 // Permission prompt
 // ---------------------------------------------------------------------------
 
-export type PermissionRequest = {
+type PermissionRequestBase = {
   readonly toolName: string
   readonly toolInput: Record<string, unknown>
-  readonly resolve: (allowed: boolean) => void
+  readonly resumeStatus: "idle" | "running"
+  readonly title?: string
+  readonly description?: string
+  readonly resolve: (allowed: boolean) => Promise<void> | void
 }
+
+export type PermissionRequest =
+  | (PermissionRequestBase & {
+      readonly kind: "tool"
+    })
+  | (PermissionRequestBase & {
+      readonly kind: "plan_exit"
+    })
 
 // ---------------------------------------------------------------------------
 // Session summary (domain-friendly projection of SDKSessionInfo)

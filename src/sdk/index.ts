@@ -30,6 +30,7 @@ export type {
   ModelInfo,
   AccountInfo,
   PermissionMode,
+  PermissionResult,
   ToolCall,
   ToolCallFileChange,
   ToolCallFileChangeType,

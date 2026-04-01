@@ -15,6 +15,7 @@ export type {
   SystemDisplayMessage,
   TaskDisplayMessage,
   ErrorDisplayMessage,
+  PlanModeState,
   SessionState,
   StartupState,
   StartupTaskState,

@@ -9,10 +9,9 @@
  *   5. React subscribes to state via a callback registry
  */
 
-import { Effect, Queue, Stream, Deferred } from "effect"
+import { Effect, Queue, Stream } from "effect"
 import type {
   SDKUserMessage,
-  SDKMessage,
   Query,
   ToolCall,
   Options,
@@ -22,11 +21,27 @@ import type {
   SDKTaskNotificationMessage,
   SpawnedTask,
   McpServerStatus,
+  PermissionResult,
 } from "#sdk/types"
 import { MessageUUID, SessionId, sessionSummaryFromSDK } from "#sdk/types"
 import type { SessionSummary } from "#sdk/types"
-import { coalesceSessionMessages, getSessionMessageFragmentCount } from "#sdk/session-history"
-import { extractToolResultIds, normalizeFileToolResult, normalizeTodoToolResult } from "#sdk/tool-result"
+import { coalesceSessionMessages } from "#sdk/session-history"
+import { projectSessionHistory } from "#state/conversation-history"
+import {
+  isFinalTaskStatus,
+  mergeTaskNotification,
+  mergeTaskProgress,
+  mergeTaskStarted,
+} from "#state/conversation-tasks"
+import {
+  createSDKMessageContext,
+  type MessageScope,
+  type StreamingBlockKind,
+} from "#state/conversation-streaming"
+import {
+  handleSDKMessage,
+  type SDKMessageHandlerDependencies,
+} from "#state/conversation-sdk-handler"
 import {
   type AssistantDisplayMessage,
   type ConversationState,
@@ -52,6 +67,12 @@ import {
   type SupportedMetadata,
 } from "#sdk/client"
 import type { ThemeName } from "#ui/theme"
+import { getErrorMessage } from "#shared/errors"
+import {
+  isStandardPermissionMode,
+  type PermissionModeName,
+  type StandardPermissionMode,
+} from "#shared/permission-modes"
 
 type ConversationServiceDependencies = {
   readonly createQuery: typeof createQuery
@@ -60,23 +81,6 @@ type ConversationServiceDependencies = {
   readonly listSessions: typeof listSessions
   readonly loadSupportedMetadata: typeof loadSupportedMetadataFromSDK
   readonly resumeSession: typeof resumeSession
-}
-
-type MessageScope = {
-  readonly taskId: string | null
-  readonly parentToolUseId: string | null
-}
-
-type StreamingBlockKind = "assistant" | "thinking"
-
-type StreamingBlockState = {
-  readonly rowUuid: MessageUUID
-  readonly kind: StreamingBlockKind
-  readonly text: string
-}
-
-type SDKMessageContext = {
-  readonly streamingBlocks: Map<string, StreamingBlockState>
 }
 
 const defaultConversationServiceDependencies: ConversationServiceDependencies = {
@@ -88,19 +92,58 @@ const defaultConversationServiceDependencies: ConversationServiceDependencies = 
   resumeSession,
 }
 
+const PLAN_MODE_ALLOWED_TOOLS = new Set([
+  "Read",
+  "Glob",
+  "Grep",
+  "TaskOutput",
+  "WebFetch",
+  "WebSearch",
+  "AskUserQuestion",
+  "ListMcpResources",
+  "ReadMcpResource",
+])
+
+const PLAN_MODE_SAFE_BASH_PREFIXES = [
+  "pwd",
+  "ls",
+  "stat",
+  "which",
+  "git status",
+  "git diff",
+  "git log",
+  "git show",
+  "git branch",
+  "git rev-parse",
+  "git ls-files",
+  "git grep",
+  "rg",
+  "env",
+  "printenv",
+  "uname",
+  "date",
+  "whoami",
+] as const
+
+const PLAN_MODE_BLOCKED_BASH_PATTERNS = [
+  /&&/,
+  /\|\|/,
+  /;/,
+  /\|/,
+  />/,
+  /</,
+  /\$\(/,
+  /`/,
+  /\b(rm|mv|cp|touch|mkdir|rmdir|chmod|chown|ln|install|dd|truncate|tee)\b/,
+  /\bgit\s+(add|commit|reset|checkout|switch|restore|clean|stash|rebase|merge|cherry-pick|apply|push|pull|fetch)\b/,
+  /\b(npm|pnpm|yarn|bun)\s+(install|i|add|remove|rm|update|up|upgrade|uninstall|create|init|x|dlx)\b/,
+] as const
+
 // ---------------------------------------------------------------------------
 // Subscriber callback type
 // ---------------------------------------------------------------------------
 
 type StateListener = (state: ConversationState) => void
-
-// ---------------------------------------------------------------------------
-// PermissionResult (matches SDK's PermissionResult type)
-// ---------------------------------------------------------------------------
-
-type PermissionResult =
-  | { behavior: "allow"; updatedInput?: Record<string, unknown> }
-  | { behavior: "deny"; message: string }
 
 // ---------------------------------------------------------------------------
 // ConversationService — manages the full lifecycle
@@ -111,7 +154,6 @@ export class ConversationService {
   private listeners: Set<StateListener> = new Set()
   private promptQueue: Queue.Queue<SDKUserMessage> | null = null
   private activeQuery: Query | null = null
-  private permissionDeferred: Deferred.Deferred<boolean, never> | null = null
   private metadataLoadPromise: Promise<void> | null = null
 
   constructor(
@@ -119,7 +161,7 @@ export class ConversationService {
     initial?: ConversationState,
     private readonly dependencies: ConversationServiceDependencies = defaultConversationServiceDependencies,
   ) {
-    this.state =
+    this.state = normalizePlanModeState(
       initial ?? {
         ...initialConversationState,
         model: config.defaultModel,
@@ -128,7 +170,8 @@ export class ConversationService {
         diffMode: config.diffMode,
         showThinking: config.showThinking,
         vimEnabled: config.vimEnabled,
-      }
+      },
+    )
   }
 
   // -------------------------------------------------------------------------
@@ -354,11 +397,73 @@ export class ConversationService {
     return sessions.map(sessionSummaryFromSDK)
   }
 
-  async setPermissionMode(mode: string): Promise<void> {
-    if (this.activeQuery) {
-      await this.activeQuery.setPermissionMode(mode as never)
+  async setPermissionMode(mode: PermissionModeName): Promise<void> {
+    if (mode === "plan") {
+      await this.enterPlanMode()
+      return
     }
+
+    if (this.state.planMode.active) {
+      await this.restorePlanPermissionMode(mode)
+      return
+    }
+
+    if (this.state.permissionMode === mode) {
+      return
+    }
+
+    await this.forwardPermissionMode(mode)
     this.dispatch({ type: "set_permission_mode", mode })
+  }
+
+  async enterPlanMode(): Promise<void> {
+    if (this.state.planMode.active) {
+      return
+    }
+
+    const previousPermissionMode = this.getCurrentStandardPermissionMode()
+    await this.forwardPermissionMode("plan")
+    this.dispatch({
+      type: "enter_plan_mode",
+      previousPermissionMode,
+    })
+  }
+
+  async togglePlanMode(): Promise<"entered" | "exited" | "cancelled"> {
+    if (this.state.planMode.active) {
+      const allowed = await this.requestPlanModeExit("user")
+      return allowed ? "exited" : "cancelled"
+    }
+
+    await this.enterPlanMode()
+    return "entered"
+  }
+
+  async requestPlanModeExit(source: "assistant" | "user" = "user"): Promise<boolean> {
+    if (!this.state.planMode.active) {
+      return true
+    }
+
+    const allowed = await this.requestPermission({
+      kind: "plan_exit",
+      toolName: "ExitPlanMode",
+      toolInput: {},
+      ...(source === "assistant"
+        ? {
+            title: "Claude wants to exit plan mode.",
+          }
+        : {
+            title: "Exit plan mode and restore write access?",
+            description: "Approve to restore your previous permission mode and let Claude apply the plan.",
+          }),
+    })
+
+    if (!allowed) {
+      return false
+    }
+
+    await this.restorePlanPermissionMode()
+    return true
   }
 
   setTheme(themeName: ThemeName): void {
@@ -385,6 +490,97 @@ export class ConversationService {
     this.dispatch({ type: "clear_messages" })
   }
 
+  private async forwardPermissionMode(mode: PermissionModeName): Promise<void> {
+    if (this.activeQuery) {
+      await this.activeQuery.setPermissionMode(mode)
+    }
+  }
+
+  private getFallbackStandardPermissionMode(): StandardPermissionMode {
+    return isStandardPermissionMode(this.config.defaultPermissionMode)
+      ? this.config.defaultPermissionMode
+      : "default"
+  }
+
+  private getCurrentStandardPermissionMode(): StandardPermissionMode {
+    return isStandardPermissionMode(this.state.permissionMode)
+      ? this.state.permissionMode
+      : this.state.planMode.previousPermissionMode ?? this.getFallbackStandardPermissionMode()
+  }
+
+  private getNonBypassFallbackStandardPermissionMode(): StandardPermissionMode {
+    const fallbackMode = this.getFallbackStandardPermissionMode()
+    return fallbackMode === "bypassPermissions" ? "default" : fallbackMode
+  }
+
+  private async restorePlanPermissionMode(
+    mode: StandardPermissionMode = this.state.planMode.previousPermissionMode
+      ?? this.getFallbackStandardPermissionMode(),
+  ): Promise<void> {
+    try {
+      await this.forwardPermissionMode(mode)
+      this.dispatch({ type: "exit_plan_mode", mode })
+    } catch (error) {
+      if (!shouldFallbackFromUnsupportedBypassPermissions(mode, error)) {
+        throw error
+      }
+
+      const fallbackMode = this.getNonBypassFallbackStandardPermissionMode()
+      await this.forwardPermissionMode(fallbackMode)
+      this.dispatch({ type: "exit_plan_mode", mode: fallbackMode })
+      this.appendSystemMessage(
+        `bypassPermissions is unavailable for this session. Restored ${fallbackMode} permission mode instead.`,
+      )
+    }
+  }
+
+  private requestPermission(request: {
+    readonly kind: "tool" | "plan_exit"
+    readonly toolName: string
+    readonly toolInput: Record<string, unknown>
+    readonly title?: string
+    readonly description?: string
+    readonly onAllow?: () => Promise<void>
+  }): Promise<boolean> {
+    const resumeStatus = this.state.sessionState.status === "running" ? "running" : "idle"
+
+    return new Promise<boolean>((resolve, reject) => {
+      this.dispatch({
+        type: "set_session_state",
+        state: {
+          status: "awaiting_permission",
+          request: {
+            ...request,
+            resumeStatus,
+            resolve: async (allowed) => {
+              let requestError: unknown = null
+
+              try {
+                if (allowed) {
+                  await request.onAllow?.()
+                }
+              } catch (error) {
+                requestError = error
+              } finally {
+                this.dispatch({
+                  type: "set_session_state",
+                  state: { status: resumeStatus },
+                })
+              }
+
+              if (requestError) {
+                reject(requestError)
+                return
+              }
+
+              resolve(allowed)
+            },
+          },
+        },
+      })
+    })
+  }
+
   // -------------------------------------------------------------------------
   // Permission handling
   // -------------------------------------------------------------------------
@@ -393,7 +589,7 @@ export class ConversationService {
     return async (
       toolName: string,
       input: Record<string, unknown>,
-      _options: {
+      options: {
         signal: AbortSignal
         title?: string
         description?: string
@@ -402,23 +598,32 @@ export class ConversationService {
         [key: string]: unknown
       },
     ): Promise<PermissionResult> => {
-      // ExitPlanMode requires explicit user permission when in plan mode
-      if (toolName === "ExitPlanMode" && this.state.permissionMode === "plan") {
-        const allowed = await new Promise<boolean>((resolve) => {
-          this.dispatch({
-            type: "set_session_state",
-            state: {
-              status: "awaiting_permission",
-              request: { toolName, toolInput: input, resolve },
+      if (this.state.planMode.active) {
+        if (toolName === "ExitPlanMode") {
+          const allowed = await this.requestPermission({
+            kind: "plan_exit",
+            toolName,
+            toolInput: input,
+            title: options.title ?? "Claude wants to exit plan mode.",
+            ...(options.description ? { description: options.description } : {}),
+            onAllow: async () => {
+              await this.restorePlanPermissionMode()
             },
           })
-        })
-        return allowed
-          ? { behavior: "allow" }
-          : { behavior: "deny", message: "User denied permission to exit plan mode." }
+
+          if (!allowed) {
+            return {
+              behavior: "deny",
+              message: "Plan mode stays active until you approve exiting it.",
+            }
+          }
+
+          return { behavior: "allow" }
+        }
+
+        return getPlanModeToolPermission(toolName, input)
       }
 
-      // Yolo mode: auto-approve all other tool calls without prompting
       return { behavior: "allow" }
     }
   }
@@ -437,16 +642,15 @@ export class ConversationService {
   // -------------------------------------------------------------------------
 
   private async processQueryOutput(q: Query): Promise<void> {
-    const ctx: SDKMessageContext = {
-      streamingBlocks: new Map(),
-    }
+    const ctx = createSDKMessageContext()
+    const handlerDependencies = this.createSDKMessageHandlerDependencies()
 
     try {
       // Fetch available models and commands from the query
-      this.fetchQueryMetadata(q)
+      void this.fetchQueryMetadata(q)
 
       for await (const msg of q) {
-        this.handleSDKMessage(msg, ctx)
+        handleSDKMessage(msg, ctx, handlerDependencies)
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -455,419 +659,6 @@ export class ConversationService {
       if (this.state.sessionState.status !== "error") {
         this.dispatch({ type: "set_session_state", state: { status: "idle" } })
       }
-    }
-  }
-
-  private handleSDKMessage(
-    msg: SDKMessage,
-    ctx: SDKMessageContext,
-  ): void {
-    switch (msg.type) {
-      case "assistant": {
-        this.handleAssistantMessage(msg, ctx)
-        break
-      }
-
-      case "user": {
-        this.handleUserMessage(msg)
-        break
-      }
-
-      case "stream_event": {
-        this.handleStreamEventMessage(msg, ctx)
-        break
-      }
-
-      case "result": {
-        if (msg.subtype === "success") {
-          this.dispatch({
-            type: "update_cost",
-            costUsd: msg.total_cost_usd,
-            tokens: msg.usage.input_tokens + msg.usage.output_tokens,
-          })
-          this.finalizeAllRunningToolCalls("completed")
-          if (msg.session_id) {
-            this.dispatch({
-              type: "set_session",
-              sessionId: SessionId(msg.session_id),
-            })
-          }
-        } else {
-          this.finalizeAllRunningToolCalls("error")
-          this.appendErrorMessage(
-            msg.errors.length > 0 ? msg.errors.join("\n") : "Query failed",
-          )
-        }
-        this.dispatch({ type: "set_session_state", state: { status: "idle" } })
-        break
-      }
-
-      case "system": {
-        switch (msg.subtype) {
-          case "init": {
-            const initMsg = msg as Record<string, unknown>
-            if (typeof initMsg["model"] === "string") {
-              this.dispatch({ type: "set_model", model: initMsg["model"] })
-            }
-            if (typeof initMsg["session_id"] === "string") {
-              this.dispatch({
-                type: "set_session",
-                sessionId: SessionId(initMsg["session_id"]),
-              })
-            }
-            break
-          }
-
-          case "local_command_output": {
-            this.appendSystemMessage(msg.content)
-            break
-          }
-
-          case "task_started": {
-            this.handleTaskStartedMessage(msg)
-            break
-          }
-
-          case "task_progress": {
-            this.handleTaskProgressMessage(msg)
-            break
-          }
-
-          case "task_notification": {
-            this.handleTaskNotificationMessage(msg)
-            break
-          }
-
-          default:
-            break
-        }
-        break
-      }
-
-      case "tool_progress": {
-        this.handleToolProgressMessage(msg)
-        break
-      }
-
-      case "tool_use_summary": {
-        this.handleToolUseSummaryMessage(msg)
-        break
-      }
-
-      default:
-        break
-    }
-  }
-
-  private handleAssistantMessage(
-    msg: Extract<SDKMessage, { readonly type: "assistant" }>,
-    ctx: SDKMessageContext,
-  ): void {
-    const timestamp = new Date()
-    const scope = this.resolveMessageScope(msg.parent_tool_use_id)
-    const blocks = extractAssistantBlocks(msg.uuid, msg.message, {
-      defaultToolStatus: "running",
-    })
-    let hasFinalizedScopeTools = false
-
-    for (const block of blocks) {
-      switch (block.kind) {
-        case "assistant":
-        case "thinking":
-          if (!hasFinalizedScopeTools) {
-            this.finalizeRunningToolCallsForScope(scope, "completed")
-            hasFinalizedScopeTools = true
-          }
-          this.upsertTranscriptTextMessage({
-            kind: block.kind,
-            uuid: this.resolveTranscriptBlockUuid(msg.uuid, block, ctx),
-            text: block.text,
-            isStreaming: false,
-            timestamp,
-            scope,
-          })
-          break
-        case "tool_call":
-          this.upsertToolCallMessage(block.toolCall, scope, timestamp)
-          break
-      }
-    }
-
-    this.finalizeStreamingBlocksForMessage(msg.uuid, ctx.streamingBlocks)
-  }
-
-  private handleUserMessage(msg: Extract<SDKMessage, { readonly type: "user" }>): void {
-    const toolResultIds = extractToolResultIds(msg.message)
-    if (toolResultIds.length === 0) {
-      return
-    }
-
-    for (const [index, toolUseId] of toolResultIds.entries()) {
-      const toolCallMessage = this.getToolCallMessage(toolUseId)
-      if (!toolCallMessage) {
-        continue
-      }
-
-      const toolUseResult = pickIndexedToolUseResult(msg.tool_use_result, index)
-
-      const fileChange = normalizeFileToolResult(toolCallMessage.toolCall.name, toolUseResult)
-      if (fileChange) {
-        this.updateToolCallById(toolUseId, (toolCall) => ({
-          ...toolCall,
-          status: "completed",
-          fileChange,
-        }))
-      }
-
-      const todoTracker = normalizeTodoToolResult(
-        toolCallMessage.toolCall.name,
-        toolUseId,
-        toolUseResult,
-      )
-      if (todoTracker) {
-        this.dispatch({ type: "update_todo_tracker", tracker: todoTracker })
-      }
-    }
-  }
-
-  private handleStreamEventMessage(
-    msg: Extract<SDKMessage, { readonly type: "stream_event" }>,
-    ctx: SDKMessageContext,
-  ): void {
-    const timestamp = new Date()
-    const scope = this.resolveMessageScope(msg.parent_tool_use_id)
-
-    switch (msg.event.type) {
-      case "content_block_start": {
-        const contentBlock = msg.event.content_block
-
-        switch (contentBlock.type) {
-          case "text":
-            this.startStreamingTranscriptBlock(
-              msg.uuid,
-              msg.event.index,
-              "assistant",
-              contentBlock.text,
-              scope,
-              timestamp,
-              ctx,
-            )
-            break
-          case "thinking":
-            this.startStreamingTranscriptBlock(
-              msg.uuid,
-              msg.event.index,
-              "thinking",
-              contentBlock.thinking,
-              scope,
-              timestamp,
-              ctx,
-            )
-            break
-          case "tool_use":
-          case "server_tool_use":
-            this.upsertToolCallMessage(
-              {
-                id: contentBlock.id,
-                name: contentBlock.name,
-                input: isRecord(contentBlock.input) ? contentBlock.input : {},
-                status: "running",
-                output: null,
-                elapsedSeconds: null,
-              },
-              scope,
-              timestamp,
-            )
-            break
-          default:
-            break
-        }
-        break
-      }
-
-      case "content_block_delta": {
-        switch (msg.event.delta.type) {
-          case "text_delta":
-            this.appendStreamingTranscriptDelta(
-              msg.uuid,
-              msg.event.index,
-              "assistant",
-              msg.event.delta.text,
-              scope,
-              timestamp,
-              ctx,
-            )
-            break
-          case "thinking_delta":
-            this.appendStreamingTranscriptDelta(
-              msg.uuid,
-              msg.event.index,
-              "thinking",
-              msg.event.delta.thinking,
-              scope,
-              timestamp,
-              ctx,
-            )
-            break
-          default:
-            break
-        }
-        break
-      }
-
-      case "content_block_stop":
-        this.stopStreamingTranscriptBlock(msg.uuid, msg.event.index, ctx.streamingBlocks)
-        break
-
-      default:
-        break
-    }
-  }
-
-  private handleToolProgressMessage(
-    msg: Extract<SDKMessage, { readonly type: "tool_progress" }>,
-  ): void {
-    this.upsertToolCallMessage(
-      {
-        id: msg.tool_use_id,
-        name: msg.tool_name,
-        input: {},
-        status: "running",
-        output: null,
-        elapsedSeconds: msg.elapsed_time_seconds,
-      },
-      this.resolveMessageScope(msg.parent_tool_use_id, msg.task_id ?? null),
-      new Date(),
-    )
-  }
-
-  private handleToolUseSummaryMessage(
-    msg: Extract<SDKMessage, { readonly type: "tool_use_summary" }>,
-  ): void {
-    for (const toolUseId of msg.preceding_tool_use_ids) {
-      this.updateToolCallById(toolUseId, (toolCall) => ({
-        ...toolCall,
-        status: "completed",
-        output: msg.summary,
-      }))
-    }
-  }
-
-  private startStreamingTranscriptBlock(
-    messageUuid: string,
-    blockIndex: number,
-    kind: StreamingBlockKind,
-    initialText: string,
-    scope: MessageScope,
-    timestamp: Date,
-    ctx: SDKMessageContext,
-  ): void {
-    const key = getStreamingBlockKey(messageUuid, blockIndex)
-    const existing = ctx.streamingBlocks.get(key)
-    if (!existing) {
-      this.finalizeRunningToolCallsForScope(scope, "completed")
-    }
-    const reusableMessage = existing ? null : this.getLatestReusableTranscriptTextMessage(kind, scope)
-    const rowUuid =
-      existing?.rowUuid ?? reusableMessage?.uuid ?? transcriptMessageUuid(kind, messageUuid, blockIndex)
-    const nextText = `${existing?.text ?? reusableMessage?.text ?? ""}${initialText}`
-
-    ctx.streamingBlocks.set(key, {
-      rowUuid,
-      kind,
-      text: nextText,
-    })
-
-    if (nextText.length > 0) {
-      this.upsertTranscriptTextMessage({
-        kind,
-        uuid: rowUuid,
-        text: nextText,
-        isStreaming: true,
-        timestamp,
-        scope,
-      })
-    }
-  }
-
-  private appendStreamingTranscriptDelta(
-    messageUuid: string,
-    blockIndex: number,
-    kind: StreamingBlockKind,
-    deltaText: string,
-    scope: MessageScope,
-    timestamp: Date,
-    ctx: SDKMessageContext,
-  ): void {
-    const key = getStreamingBlockKey(messageUuid, blockIndex)
-    const existing = ctx.streamingBlocks.get(key)
-    if (!existing) {
-      this.finalizeRunningToolCallsForScope(scope, "completed")
-    }
-    const reusableMessage = existing ? null : this.getLatestReusableTranscriptTextMessage(kind, scope)
-    const rowUuid =
-      existing?.rowUuid ?? reusableMessage?.uuid ?? transcriptMessageUuid(kind, messageUuid, blockIndex)
-    const nextText = `${existing?.text ?? reusableMessage?.text ?? ""}${deltaText}`
-
-    ctx.streamingBlocks.set(key, {
-      rowUuid,
-      kind,
-      text: nextText,
-    })
-
-    if (nextText.length > 0) {
-      this.upsertTranscriptTextMessage({
-        kind,
-        uuid: rowUuid,
-        text: nextText,
-        isStreaming: true,
-        timestamp,
-        scope,
-      })
-    }
-  }
-
-  private stopStreamingTranscriptBlock(
-    messageUuid: string,
-    blockIndex: number,
-    streamingBlocks: Map<string, StreamingBlockState>,
-  ): void {
-    const key = getStreamingBlockKey(messageUuid, blockIndex)
-    const existing = streamingBlocks.get(key)
-    if (!existing) {
-      return
-    }
-
-    const message = this.getTranscriptTextMessage(existing.rowUuid)
-    if (message?.isStreaming) {
-      this.dispatch({
-        type: "set_message_streaming",
-        uuid: existing.rowUuid,
-        isStreaming: false,
-      })
-    }
-
-  }
-
-  private finalizeStreamingBlocksForMessage(
-    messageUuid: string,
-    streamingBlocks: Map<string, StreamingBlockState>,
-  ): void {
-    for (const [key, block] of streamingBlocks.entries()) {
-      if (!key.startsWith(`${messageUuid}:`)) {
-        continue
-      }
-
-      const message = this.getTranscriptTextMessage(block.rowUuid)
-      if (message?.isStreaming) {
-        this.dispatch({
-          type: "set_message_streaming",
-          uuid: block.rowUuid,
-          isStreaming: false,
-        })
-      }
-
-      streamingBlocks.delete(key)
     }
   }
 
@@ -910,11 +701,7 @@ export class ConversationService {
     }
 
     if (existing.isStreaming !== options.isStreaming) {
-      this.dispatch({
-        type: "set_message_streaming",
-        uuid: options.uuid,
-        isStreaming: options.isStreaming,
-      })
+      this.setMessageStreaming(options.uuid, options.isStreaming)
     }
   }
 
@@ -930,21 +717,6 @@ export class ConversationService {
       taskId: scope.taskId,
       parentToolUseId: scope.parentToolUseId,
     })
-  }
-
-  private resolveTranscriptBlockUuid(
-    messageUuid: string,
-    block: Extract<AssistantBlock, { readonly kind: "assistant" | "thinking" }>,
-    ctx: SDKMessageContext,
-  ): MessageUUID {
-    for (const index of block.sourceIndices) {
-      const existing = ctx.streamingBlocks.get(getStreamingBlockKey(messageUuid, index))
-      if (existing) {
-        return existing.rowUuid
-      }
-    }
-
-    return block.uuid
   }
 
   private resolveMessageScope(parentToolUseId: string | null, taskId: string | null = null): MessageScope {
@@ -983,6 +755,14 @@ export class ConversationService {
     return null
   }
 
+  private setMessageStreaming(uuid: MessageUUID, isStreaming: boolean): void {
+    this.dispatch({
+      type: "set_message_streaming",
+      uuid,
+      isStreaming,
+    })
+  }
+
   private getLatestReusableTranscriptTextMessage(
     kind: StreamingBlockKind,
     scope: MessageScope,
@@ -993,6 +773,7 @@ export class ConversationService {
       lastMessage &&
       (lastMessage.kind === "assistant" || lastMessage.kind === "thinking") &&
       lastMessage.kind === kind &&
+      lastMessage.isStreaming &&
       lastMessage.taskId === scope.taskId &&
       lastMessage.parentToolUseId === scope.parentToolUseId
     ) {
@@ -1085,6 +866,10 @@ export class ConversationService {
       canUseTool,
       model: this.state.model,
       permissionMode: this.state.permissionMode as never,
+      ...(this.state.permissionMode === "bypassPermissions"
+        || this.state.planMode.previousPermissionMode === "bypassPermissions"
+        ? { allowDangerouslySkipPermissions: true }
+        : {}),
     }
   }
 
@@ -1116,6 +901,27 @@ export class ConversationService {
   ): AsyncIterable<SDKUserMessage> {
     const stream = Stream.fromQueue(queue)
     return Stream.toAsyncIterable(stream)
+  }
+
+  private createSDKMessageHandlerDependencies(): SDKMessageHandlerDependencies {
+    return {
+      appendErrorMessage: this.appendErrorMessage.bind(this),
+      appendSystemMessage: this.appendSystemMessage.bind(this),
+      dispatch: this.dispatch.bind(this),
+      finalizeAllRunningToolCalls: this.finalizeAllRunningToolCalls.bind(this),
+      finalizeRunningToolCallsForScope: this.finalizeRunningToolCallsForScope.bind(this),
+      getLatestReusableTranscriptTextMessage: this.getLatestReusableTranscriptTextMessage.bind(this),
+      getToolCallMessage: this.getToolCallMessage.bind(this),
+      getTranscriptTextMessage: this.getTranscriptTextMessage.bind(this),
+      handleTaskNotificationMessage: this.handleTaskNotificationMessage.bind(this),
+      handleTaskProgressMessage: this.handleTaskProgressMessage.bind(this),
+      handleTaskStartedMessage: this.handleTaskStartedMessage.bind(this),
+      resolveMessageScope: this.resolveMessageScope.bind(this),
+      setMessageStreaming: this.setMessageStreaming.bind(this),
+      updateToolCallById: this.updateToolCallById.bind(this),
+      upsertToolCallMessage: this.upsertToolCallMessage.bind(this),
+      upsertTranscriptTextMessage: this.upsertTranscriptTextMessage.bind(this),
+    }
   }
 
   private getTaskMessage(taskId: string): TaskDisplayMessage | null {
@@ -1275,474 +1081,95 @@ export class ConversationService {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-type AssistantBlock =
-  | {
-      readonly kind: "assistant"
-      readonly uuid: MessageUUID
-      readonly text: string
-      readonly sourceIndices: readonly number[]
-    }
-  | {
-      readonly kind: "thinking"
-      readonly uuid: MessageUUID
-      readonly text: string
-      readonly sourceIndices: readonly number[]
-    }
-  | {
-      readonly kind: "tool_call"
-      readonly uuid: MessageUUID
-      readonly toolCall: ToolCall
-    }
-
-function projectSessionHistory(history: readonly unknown[]): ConversationState {
-  let state = initialConversationState
-
-  for (const message of history) {
-    state = projectSessionMessage(state, message)
-  }
-
-  return state
-}
-
-function projectSessionMessage(
-  state: ConversationState,
-  message: unknown,
-): ConversationState {
-  if (!isRecord(message)) {
-    return state
-  }
-
-  const type = message["type"]
-  const messageUuid = typeof message["uuid"] === "string" ? message["uuid"] : crypto.randomUUID()
-  const timestamp = new Date()
-  const scope: MessageScope = {
-    taskId: null,
-    parentToolUseId: normalizeOptionalString(message["parent_tool_use_id"]),
-  }
-
-  if (type === "user") {
-    let nextState = projectHistoryToolResultMessage(state, message)
-    const text = extractTextContent(message["message"])
-
-    if (text.length === 0) {
-      return nextState
-    }
-
-    nextState = conversationReducer(nextState, {
-      type: "append_message",
-      message: {
-        kind: "user",
-        uuid: MessageUUID(messageUuid),
-        text,
-        timestamp,
+function normalizePlanModeState(state: ConversationState): ConversationState {
+  if (state.permissionMode === "plan") {
+    return {
+      ...state,
+      planMode: {
+        active: true,
+        previousPermissionMode: state.planMode.previousPermissionMode,
       },
-    })
-
-    return nextState
-  }
-
-  if (type !== "assistant") {
-    return state
-  }
-
-  let nextState = state
-  const fragmentCount = getSessionMessageFragmentCount(message)
-  const blocks = extractAssistantBlocks(messageUuid, message["message"], {
-    defaultToolStatus: "completed",
-  })
-  const shouldSkipThinkingBlocks =
-    fragmentCount > 1 && blocks.some((block) => block.kind === "assistant" || block.kind === "tool_call")
-
-  for (const block of blocks) {
-    if (shouldSkipThinkingBlocks && block.kind === "thinking") {
-      continue
     }
-
-    switch (block.kind) {
-      case "assistant": {
-        nextState = conversationReducer(nextState, {
-          type: "append_message",
-          message: {
-            kind: "assistant",
-            uuid: block.uuid,
-            text: block.text,
-            isStreaming: false,
-            timestamp,
-            taskId: scope.taskId,
-            parentToolUseId: scope.parentToolUseId,
-          },
-        })
-        break
-      }
-      case "thinking": {
-        nextState = conversationReducer(nextState, {
-          type: "append_message",
-          message: {
-            kind: "thinking",
-            uuid: block.uuid,
-            text: block.text,
-            isStreaming: false,
-            timestamp,
-            taskId: scope.taskId,
-            parentToolUseId: scope.parentToolUseId,
-          },
-        })
-        break
-      }
-      case "tool_call": {
-        nextState = conversationReducer(nextState, {
-          type: "upsert_tool_call_message",
-          toolCall: block.toolCall,
-          timestamp,
-          taskId: scope.taskId,
-          parentToolUseId: scope.parentToolUseId,
-        })
-        break
-      }
-    }
-  }
-
-  return nextState
-}
-
-function projectHistoryToolResultMessage(
-  state: ConversationState,
-  message: Record<string, unknown>,
-): ConversationState {
-  const toolResultIds = extractToolResultIds(message["message"])
-  if (toolResultIds.length === 0) {
-    return state
-  }
-
-  let nextState = state
-
-  for (const [index, toolUseId] of toolResultIds.entries()) {
-    const toolCallMessage = findToolCallMessage(nextState.messages, toolUseId)
-    if (!toolCallMessage) {
-      continue
-    }
-
-    const toolUseResult = pickIndexedToolUseResult(message["tool_use_result"], index)
-
-    const fileChange = normalizeFileToolResult(toolCallMessage.toolCall.name, toolUseResult)
-    if (fileChange) {
-      nextState = conversationReducer(nextState, {
-        type: "upsert_tool_call_message",
-        toolCall: {
-          ...toolCallMessage.toolCall,
-          status: "completed",
-          fileChange,
-        },
-        timestamp: toolCallMessage.timestamp,
-        taskId: toolCallMessage.taskId,
-        parentToolUseId: toolCallMessage.parentToolUseId,
-      })
-    }
-
-    const todoTracker = normalizeTodoToolResult(
-      toolCallMessage.toolCall.name,
-      toolUseId,
-      toolUseResult,
-    )
-    if (todoTracker) {
-      nextState = conversationReducer(nextState, {
-        type: "update_todo_tracker",
-        tracker: todoTracker,
-      })
-    }
-  }
-
-  return nextState
-}
-
-function findToolCallMessage(
-  messages: readonly DisplayMessage[],
-  toolCallId: string,
-): ToolCallDisplayMessage | null {
-  for (const message of messages) {
-    if (message.kind === "tool_call" && message.toolCall.id === toolCallId) {
-      return message
-    }
-  }
-
-  return null
-}
-
-function pickIndexedToolUseResult(toolUseResult: unknown, index: number): unknown {
-  if (!Array.isArray(toolUseResult)) {
-    return toolUseResult
-  }
-
-  if (toolUseResult.length === 1) {
-    return toolUseResult[0]
-  }
-
-  return toolUseResult[index]
-}
-
-function normalizeOptionalString(value: unknown): string | null {
-  return typeof value === "string" ? value : null
-}
-
-function extractAssistantBlocks(
-  messageUuid: string,
-  message: unknown,
-  options: { readonly defaultToolStatus: ToolCall["status"] },
-): readonly AssistantBlock[] {
-  if (!isRecord(message)) {
-    return []
-  }
-
-  const content = message["content"]
-
-  if (typeof content === "string") {
-    return content.length > 0
-      ? [
-          {
-            kind: "assistant",
-            uuid: transcriptMessageUuid("assistant", messageUuid, 0),
-            text: content,
-            sourceIndices: [0],
-          },
-        ]
-      : []
-  }
-
-  if (!Array.isArray(content)) {
-    return []
-  }
-
-  const blocks: AssistantBlock[] = []
-
-  const appendTextBlock = (
-    kind: Extract<AssistantBlock, { readonly kind: "assistant" | "thinking" }>['kind'],
-    text: string,
-    index: number,
-  ) => {
-    if (text.length === 0) {
-      return
-    }
-
-    const previous = blocks.at(-1)
-    if (previous && previous.kind === kind) {
-      blocks[blocks.length - 1] = {
-        ...previous,
-        text: `${previous.text}${text}`,
-        sourceIndices: [...previous.sourceIndices, index],
-      }
-      return
-    }
-
-    blocks.push({
-      kind,
-      uuid: transcriptMessageUuid(kind, messageUuid, index),
-      text,
-      sourceIndices: [index],
-    })
-  }
-
-  for (const [index, block] of content.entries()) {
-    if (typeof block === "string") {
-      appendTextBlock("assistant", block, index)
-      continue
-    }
-
-    if (!isRecord(block)) {
-      continue
-    }
-
-    const type = block["type"]
-
-    if (type === "text" && typeof block["text"] === "string" && block["text"].length > 0) {
-      appendTextBlock("assistant", block["text"], index)
-      continue
-    }
-
-    if (
-      type === "thinking" &&
-      typeof block["thinking"] === "string" &&
-      block["thinking"].length > 0
-    ) {
-      appendTextBlock("thinking", block["thinking"], index)
-      continue
-    }
-
-    if (
-      (type === "tool_use" || type === "server_tool_use") &&
-      typeof block["id"] === "string" &&
-      typeof block["name"] === "string"
-    ) {
-      blocks.push({
-        kind: "tool_call",
-        uuid: toolCallMessageUuid(block["id"]),
-        toolCall: {
-          id: block["id"],
-          name: block["name"],
-          input: isRecord(block["input"]) ? block["input"] : {},
-          status: options.defaultToolStatus,
-          output: null,
-          elapsedSeconds: null,
-        },
-      })
-    }
-  }
-
-  return blocks
-}
-
-function extractTextContent(message: unknown): string {
-  if (!isRecord(message)) {
-    return ""
-  }
-
-  const content = message["content"]
-  if (typeof content === "string") {
-    return content
-  }
-
-  if (!Array.isArray(content)) {
-    return ""
-  }
-
-  return content
-    .flatMap((block) => {
-      if (typeof block === "string") {
-        return [block]
-      }
-
-      if (isRecord(block) && typeof block["text"] === "string") {
-        return [block["text"]]
-      }
-
-      return []
-    })
-    .join("")
-}
-
-function transcriptMessageUuid(
-  kind: StreamingBlockKind,
-  messageUuid: string,
-  blockIndex: number,
-): MessageUUID {
-  return MessageUUID(`${kind}:${messageUuid}:${blockIndex}`)
-}
-
-function toolCallMessageUuid(toolUseId: string): MessageUUID {
-  return MessageUUID(`tool:${toolUseId}`)
-}
-
-function getStreamingBlockKey(messageUuid: string, blockIndex: number): string {
-  return `${messageUuid}:${blockIndex}`
-}
-
-function mergeTaskStarted(
-  current: SpawnedTask | null,
-  message: SDKTaskStartedMessage,
-): SpawnedTask {
-  const hasFinalStatus = current !== null && isFinalTaskStatus(current.status)
-
-  return {
-    id: message.task_id,
-    description: normalizeTaskDescription(message.description, current),
-    taskType: normalizeOptionalTaskText(message.task_type) ?? current?.taskType ?? null,
-    workflowName: normalizeOptionalTaskText(message.workflow_name) ?? current?.workflowName ?? null,
-    toolUseId: normalizeOptionalTaskText(message.tool_use_id) ?? current?.toolUseId ?? null,
-    prompt: normalizeOptionalTaskText(message.prompt) ?? current?.prompt ?? null,
-    status: hasFinalStatus ? current.status : "running",
-    summary: current?.summary ?? null,
-    lastToolName: current?.lastToolName ?? null,
-    outputFile: current?.outputFile ?? null,
-    usage: current?.usage ?? null,
-  }
-}
-
-function mergeTaskProgress(
-  current: SpawnedTask | null,
-  message: SDKTaskProgressMessage,
-): SpawnedTask {
-  const hasFinalStatus = current !== null && isFinalTaskStatus(current.status)
-  const nextSummary = normalizeOptionalTaskText(message.summary)
-  const nextLastToolName = normalizeOptionalTaskText(message.last_tool_name)
-  const nextUsage = taskUsageFromSDK(message.usage)
-
-  return {
-    id: message.task_id,
-    description: normalizeTaskDescription(message.description, current),
-    taskType: current?.taskType ?? null,
-    workflowName: current?.workflowName ?? null,
-    toolUseId: normalizeOptionalTaskText(message.tool_use_id) ?? current?.toolUseId ?? null,
-    prompt: current?.prompt ?? null,
-    status: hasFinalStatus ? current.status : "running",
-    summary: hasFinalStatus ? current?.summary ?? nextSummary ?? null : nextSummary ?? current?.summary ?? null,
-    lastToolName: hasFinalStatus
-      ? current?.lastToolName ?? nextLastToolName ?? null
-      : nextLastToolName ?? current?.lastToolName ?? null,
-    outputFile: current?.outputFile ?? null,
-    usage: hasFinalStatus ? current?.usage ?? nextUsage ?? null : nextUsage,
-  }
-}
-
-function mergeTaskNotification(
-  current: SpawnedTask | null,
-  message: SDKTaskNotificationMessage,
-): SpawnedTask {
-  return {
-    id: message.task_id,
-    description: current?.description ?? "Background task",
-    taskType: current?.taskType ?? null,
-    workflowName: current?.workflowName ?? null,
-    toolUseId: normalizeOptionalTaskText(message.tool_use_id) ?? current?.toolUseId ?? null,
-    prompt: current?.prompt ?? null,
-    status: message.status,
-    summary: normalizeOptionalTaskText(message.summary) ?? current?.summary ?? null,
-    lastToolName: current?.lastToolName ?? null,
-    outputFile: normalizeOptionalTaskText(message.output_file) ?? current?.outputFile ?? null,
-    usage: taskUsageFromSDK(message.usage) ?? current?.usage ?? null,
-  }
-}
-
-function taskUsageFromSDK(
-  usage: SDKTaskProgressMessage["usage"] | SDKTaskNotificationMessage["usage"] | undefined,
-): SpawnedTask["usage"] {
-  if (!usage) {
-    return null
   }
 
   return {
-    totalTokens: usage.total_tokens,
-    toolUses: usage.tool_uses,
-    durationMs: usage.duration_ms,
+    ...state,
+    planMode: {
+      active: false,
+      previousPermissionMode: null,
+    },
   }
 }
 
-function isFinalTaskStatus(status: SpawnedTask["status"]): boolean {
-  return status === "completed" || status === "failed" || status === "stopped"
-}
-
-function normalizeTaskDescription(
-  description: string,
-  current: SpawnedTask | null,
-): string {
-  return normalizeOptionalTaskText(description) ?? current?.description ?? "Background task"
-}
-
-function normalizeOptionalTaskText(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null
+function shouldFallbackFromUnsupportedBypassPermissions(
+  mode: StandardPermissionMode,
+  error: unknown,
+): boolean {
+  if (mode !== "bypassPermissions") {
+    return false
   }
 
-  const normalized = value.trim()
-  return normalized.length > 0 ? normalized : null
+  const message = getErrorMessage(error)
+  return message.includes("Cannot set permission mode to bypassPermissions")
+    && message.includes("--dangerously-skip-permissions")
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function getPlanModeToolPermission(
+  toolName: string,
+  input: Record<string, unknown>,
+): PermissionResult {
+  if (PLAN_MODE_ALLOWED_TOOLS.has(toolName)) {
+    return { behavior: "allow" }
+  }
+
+  if (toolName === "Bash") {
+    return getPlanModeBashPermission(input)
+  }
+
+  if (toolName === "Task" || toolName === "Agent" || toolName === "SpawnAgent") {
+    return {
+      behavior: "deny",
+      message: "Plan mode is read-only. Child agents are disabled until plan mode exits.",
+    }
+  }
+
+  if (toolName.startsWith("mcp__") || toolName === "Mcp") {
+    return {
+      behavior: "deny",
+      message: "Plan mode is read-only. MCP tool calls are blocked unless they are explicitly surfaced as read-only tools.",
+    }
+  }
+
+  return {
+    behavior: "deny",
+    message: `Plan mode is read-only. ${toolName} is blocked until plan mode exits.`,
+  }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+function getPlanModeBashPermission(input: Record<string, unknown>): PermissionResult {
+  const command = typeof input["command"] === "string" ? input["command"].trim() : ""
+
+  if (!command) {
+    return {
+      behavior: "deny",
+      message: "Plan mode only allows clearly read-only Bash commands.",
+    }
+  }
+
+  if (PLAN_MODE_BLOCKED_BASH_PATTERNS.some((pattern) => pattern.test(command))) {
+    return {
+      behavior: "deny",
+      message: "Plan mode only allows read-only Bash commands. This command looks mutating.",
+    }
+  }
+
+  const normalized = command.toLowerCase()
+  if (!PLAN_MODE_SAFE_BASH_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `))) {
+    return {
+      behavior: "deny",
+      message: "Plan mode only allows a small set of read-only Bash commands.",
+    }
+  }
+
+  return { behavior: "allow" }
 }

@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test"
 import { MessageUUID, SessionId, type Query } from "#sdk/types"
 import { ConversationService } from "#state/conversation-service"
 import type { AppConfig } from "#config/schema"
-import type { DisplayMessage, TaskDisplayMessage, ToolCallDisplayMessage } from "#state/types"
+import { initialConversationState, type DisplayMessage, TaskDisplayMessage, ToolCallDisplayMessage } from "#state/types"
+
+type TestQuery = Query & {
+  capturedOptions: Partial<import("#sdk/types").Options> | undefined
+}
 
 const TEST_CONFIG: AppConfig = {
   theme: "dark",
@@ -17,6 +21,199 @@ const TEST_CONFIG: AppConfig = {
 }
 
 describe("ConversationService", () => {
+  it("stores the previous permission mode when entering plan mode", async () => {
+    const setPermissionModeCalls: string[] = []
+    const query = createFakeQuery({
+      setPermissionMode: async (mode) => {
+        setPermissionModeCalls.push(mode)
+      },
+    })
+    const service = createService({ query })
+
+    await service.setPermissionMode("acceptEdits")
+    service.setPromptText("plan this")
+    await service.submitCurrentPrompt()
+    await service.enterPlanMode()
+
+    expect(service.getState().permissionMode).toBe("plan")
+    expect(service.getState().planMode).toEqual({
+      active: true,
+      previousPermissionMode: "acceptEdits",
+    })
+    expect(setPermissionModeCalls).toEqual(["plan"])
+  })
+
+  it("keeps plan mode active when exit is denied", async () => {
+    const query = createFakeQuery()
+    const service = createService({ query })
+
+    service.setPromptText("start")
+    await service.submitCurrentPrompt()
+    await service.setPermissionMode("acceptEdits")
+    await service.enterPlanMode()
+
+    const exitPromise = getCanUseTool(query)("ExitPlanMode", {}, createToolOptions())
+    await Bun.sleep(0)
+
+    expect(service.getState().sessionState).toMatchObject({
+      status: "awaiting_permission",
+      request: {
+        kind: "plan_exit",
+        toolName: "ExitPlanMode",
+      },
+    })
+
+    service.resolvePermission(false)
+
+    await expect(exitPromise).resolves.toEqual({
+      behavior: "deny",
+      message: "Plan mode stays active until you approve exiting it.",
+    })
+    expect(service.getState().permissionMode).toBe("plan")
+    expect(service.getState().planMode.active).toBe(true)
+    expect(service.getState().sessionState).toEqual({ status: "idle" })
+  })
+
+  it("restores the previous permission mode when exit is approved", async () => {
+    const setPermissionModeCalls: string[] = []
+    const query = createFakeQuery({
+      setPermissionMode: async (mode) => {
+        setPermissionModeCalls.push(mode)
+      },
+    })
+    const service = createService({ query })
+
+    service.setPromptText("start")
+    await service.submitCurrentPrompt()
+    await service.setPermissionMode("bypassPermissions")
+    await service.enterPlanMode()
+
+    const exitPromise = getCanUseTool(query)("ExitPlanMode", {}, createToolOptions())
+    await Bun.sleep(0)
+    service.resolvePermission(true)
+
+    await expect(exitPromise).resolves.toEqual({ behavior: "allow" })
+    expect(service.getState().permissionMode).toBe("bypassPermissions")
+    expect(service.getState().planMode).toEqual({
+      active: false,
+      previousPermissionMode: null,
+    })
+    expect(setPermissionModeCalls).toEqual(["bypassPermissions", "plan", "bypassPermissions"])
+  })
+
+  it("falls back to default when bypassPermissions cannot be restored", async () => {
+    const setPermissionModeCalls: string[] = []
+    const query = createFakeQuery({
+      setPermissionMode: async (mode) => {
+        setPermissionModeCalls.push(mode)
+        if (mode === "bypassPermissions") {
+          throw new Error(
+            "Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions",
+          )
+        }
+      },
+    })
+    const service = new ConversationService(TEST_CONFIG, {
+      ...initialConversationState,
+      model: TEST_CONFIG.defaultModel,
+      permissionMode: "plan",
+      themeName: TEST_CONFIG.theme,
+      diffMode: TEST_CONFIG.diffMode,
+      showThinking: TEST_CONFIG.showThinking,
+      vimEnabled: TEST_CONFIG.vimEnabled,
+      planMode: {
+        active: true,
+        previousPermissionMode: "bypassPermissions",
+      },
+    }, {
+      createQuery: () => query,
+      getQueryMetadata: async () => createEmptyMetadata(),
+      getSessionMessages: async () => [],
+      listSessions: async () => [],
+      loadSupportedMetadata: async () => createEmptyMetadata(),
+      resumeSession: () => query,
+    })
+
+    ;(service as unknown as { activeQuery: Query | null }).activeQuery = query
+
+    const exitPromise = service.requestPlanModeExit("user")
+    await Bun.sleep(0)
+    service.resolvePermission(true)
+
+    await expect(exitPromise).resolves.toBe(true)
+    expect(service.getState().permissionMode).toBe("default")
+    expect(service.getState().planMode).toEqual({
+      active: false,
+      previousPermissionMode: null,
+    })
+    expect(service.getState().messages.at(-1)).toMatchObject({
+      kind: "system",
+      text: "bypassPermissions is unavailable for this session. Restored default permission mode instead.",
+    })
+    expect(setPermissionModeCalls).toEqual(["bypassPermissions", "default"])
+  })
+
+  it("denies mutating tools but allows read tools in plan mode", async () => {
+    const query = createFakeQuery()
+    const service = createService({ query })
+
+    service.setPromptText("start")
+    await service.submitCurrentPrompt()
+    await service.enterPlanMode()
+
+    await expect(
+      getCanUseTool(query)("Read", { file_path: "/tmp/example.ts" }, createToolOptions()),
+    ).resolves.toEqual({ behavior: "allow" })
+    await expect(
+      getCanUseTool(query)("Write", { file_path: "/tmp/example.ts", content: "x" }, createToolOptions()),
+    ).resolves.toEqual({
+      behavior: "deny",
+      message: "Plan mode is read-only. Write is blocked until plan mode exits.",
+    })
+    await expect(
+      getCanUseTool(query)("Bash", { command: "git status" }, createToolOptions()),
+    ).resolves.toEqual({ behavior: "allow" })
+    await expect(
+      getCanUseTool(query)("Bash", { command: "git add ." }, createToolOptions()),
+    ).resolves.toEqual({
+      behavior: "deny",
+      message: "Plan mode only allows read-only Bash commands. This command looks mutating.",
+    })
+  })
+
+  it("syncs local permission state from sdk init and status updates", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "system",
+        subtype: "init",
+        model: "sonnet",
+        permissionMode: "plan",
+        session_id: "session-1",
+      },
+      {
+        type: "system",
+        subtype: "status",
+        status: null,
+        permissionMode: "acceptEdits",
+        uuid: crypto.randomUUID(),
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        session_id: "session-1",
+      },
+    ])
+
+    expect(service.getState().permissionMode).toBe("acceptEdits")
+    expect(service.getState().planMode).toEqual({
+      active: false,
+      previousPermissionMode: null,
+    })
+  })
+
   it("tracks startup auth state separately from conversation state", () => {
     const service = new ConversationService(TEST_CONFIG, undefined, {
       createQuery: () => createFakeQuery(),
@@ -77,6 +274,23 @@ describe("ConversationService", () => {
     await service.loadSession("session-1")
 
     expect(resumeSessionCalls).toEqual([{ model: "haiku" }])
+  })
+
+  it("launches queries with dangerous skip enabled when bypassPermissions may need to be restored", async () => {
+    const query = createFakeQuery()
+    const service = createService({ query })
+
+    await service.setPermissionMode("bypassPermissions").catch(() => {
+      return
+    })
+    service.setPromptText("plan this")
+    await service.enterPlanMode()
+    await service.submitCurrentPrompt()
+
+    expect(query.capturedOptions).toMatchObject({
+      permissionMode: "plan",
+      allowDangerouslySkipPermissions: true,
+    })
   })
 
   it("loads session history and allows follow-up prompts in the resumed session", async () => {
@@ -553,6 +767,106 @@ describe("ConversationService", () => {
       "tool_call:Read",
       "assistant:Here is the answer.",
     ])
+  })
+
+  it("does not leave a duplicate streaming assistant row when the final assistant uuid differs", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "stream_event",
+        uuid: "stream-msg-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Here is the answer." },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "final-msg-1",
+        parent_tool_use_id: null,
+        message: {
+          content: "Here is the answer.",
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.02,
+        usage: { input_tokens: 200, output_tokens: 100 },
+        session_id: "session-1",
+      },
+    ])
+
+    const assistantMessages = service.getState().messages.filter(
+      (message): message is Extract<DisplayMessage, { kind: "assistant" }> =>
+        message.kind === "assistant",
+    )
+
+    expect(assistantMessages).toHaveLength(1)
+    expect(assistantMessages[0]).toMatchObject({
+      text: "Here is the answer.",
+      isStreaming: false,
+    })
+  })
+
+  it("does not leave a duplicate streaming thinking row when the final assistant uuid differs", async () => {
+    const service = await runServiceWithMessages([
+      {
+        type: "stream_event",
+        uuid: "stream-msg-1",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "thinking",
+            thinking: "Now let me look at how slash commands are populated.",
+          },
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "assistant",
+        uuid: "final-msg-1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "thinking",
+              thinking: "Now let me look at how slash commands are populated.",
+              signature: "sig-1",
+            },
+            {
+              type: "text",
+              text: "Here is the answer.",
+              citations: null,
+            },
+          ],
+        },
+        session_id: "session-1",
+      },
+      {
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 0.02,
+        usage: { input_tokens: 200, output_tokens: 100 },
+        session_id: "session-1",
+      },
+    ])
+
+    const thinkingMessages = service.getState().messages.filter(
+      (message): message is Extract<DisplayMessage, { kind: "thinking" }> =>
+        message.kind === "thinking",
+    )
+
+    expect(thinkingMessages).toHaveLength(1)
+    expect(thinkingMessages[0]).toMatchObject({
+      text: "Now let me look at how slash commands are populated.",
+      isStreaming: false,
+    })
   })
 
   it("reuses one tool row when progress arrives before the final assistant tool block", async () => {
@@ -1411,6 +1725,42 @@ function createEmptyMetadata() {
   }
 }
 
+function createService(options?: {
+  readonly query?: TestQuery
+}): ConversationService {
+  const query = options?.query ?? createFakeQuery()
+  return new ConversationService(TEST_CONFIG, undefined, {
+    createQuery: (_config, params) => {
+      query.capturedOptions = params.options
+      return query
+    },
+    getQueryMetadata: async () => createEmptyMetadata(),
+    getSessionMessages: async () => [],
+    listSessions: async () => [],
+    loadSupportedMetadata: async () => createEmptyMetadata(),
+    resumeSession: (_config, _sessionId, _prompt, overrides) => {
+      query.capturedOptions = overrides
+      return query
+    },
+  })
+}
+
+function getCanUseTool(query: TestQuery) {
+  const options = query.capturedOptions
+  if (!options?.canUseTool) {
+    throw new Error("Expected query options.canUseTool to be captured")
+  }
+
+  return options.canUseTool
+}
+
+function createToolOptions() {
+  return {
+    signal: new AbortController().signal,
+    toolUseID: crypto.randomUUID(),
+  }
+}
+
 async function runServiceWithMessages(messages: readonly unknown[]): Promise<ConversationService> {
   const query = createFakeQuery({ messages })
   const service = new ConversationService(
@@ -1436,9 +1786,11 @@ async function runServiceWithMessages(messages: readonly unknown[]): Promise<Con
 function createFakeQuery(overrides?: {
   readonly interrupt?: Query["interrupt"]
   readonly setModel?: Query["setModel"]
+  readonly setPermissionMode?: Query["setPermissionMode"]
   readonly messages?: readonly unknown[]
-}): Query {
-  return {
+}): TestQuery {
+  const query = {
+    capturedOptions: undefined as Partial<import("#sdk/types").Options> | undefined,
     close() {
       return
     },
@@ -1453,9 +1805,9 @@ function createFakeQuery(overrides?: {
     setModel: overrides?.setModel ?? (async () => {
       return
     }),
-    setPermissionMode: async () => {
+    setPermissionMode: overrides?.setPermissionMode ?? (async () => {
       return
-    },
+    }),
     async *[Symbol.asyncIterator]() {
       if (overrides?.messages) {
         for (const msg of overrides.messages) {
@@ -1464,14 +1816,17 @@ function createFakeQuery(overrides?: {
       }
       return
     },
-  } as unknown as Query
+  }
+
+  return query as unknown as TestQuery
 }
 
 async function consumePrompt(
   prompt: AsyncIterable<unknown>,
   onMessage: () => void,
 ): Promise<void> {
-  for await (const _message of prompt) {
+  for await (const message of prompt) {
+    void message
     onMessage()
     break
   }
